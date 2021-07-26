@@ -1,0 +1,11 @@
+{
+  "n_schedulers": 5,
+  "n_servers": 5,
+  "arrival_rate": 9,
+  "serving_rate": 10,
+  "queue_max_len": 10,
+  "n_packages": 100,
+  "msg_bits": 2,
+  "silent": false,
+  "c_noise": null
+}

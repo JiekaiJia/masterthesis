@@ -18,6 +18,8 @@ class Package:
     def __init__(self, i, t):
         self.id = i
         self.arriving_time = t
+        self.halt_time = 0
+        self.sending_time = None
         self.target = None
         self.serving_time = None
 

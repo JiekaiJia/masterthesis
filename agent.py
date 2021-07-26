@@ -1,21 +1,23 @@
 """This module provide the basic agent classes, which consist environment."""
+import math
 import numpy as np
 
 
 class Agent:
     def __init__(self, agent_id):
         self.id = agent_id
+        self.c_noise = None
         self.name = ''
         self.queue = []
 
     def receive(self, package):
-        pass
+        raise NotImplementedError()
 
     def send(self):
-        pass
+        raise NotImplementedError()
 
     def serve(self):
-        pass
+        raise NotImplementedError()
 
 
 class Scheduler(Agent):
@@ -36,18 +38,34 @@ class Scheduler(Agent):
     def __len__(self):
         return len(self.queue)
 
-    def has_package(self):
+    def __bool__(self):
         if self.queue:
             return True
         return False
 
     def send(self):
-        if self.action.a == 0:
-            return None
-        else:
-            packet = self.queue.pop(0)
-            packet.target = self.action.a
-            return packet
+        nums = len(self.queue)
+        res = nums
+        pkgs_to_send = [a * nums for a in self.action.a]
+        packets = []
+        while res > 0:
+            act_index = np.argmax(pkgs_to_send)
+            pkg_num = math.ceil(pkgs_to_send[act_index])
+            pkgs_to_send[act_index] = 0
+            res -= pkg_num
+            if res < 0:
+                pkg_num += res
+            if act_index == 0:
+                continue
+            for _ in range(pkg_num):
+                packets.append(self.queue.pop(0))
+                packets[-1].target = act_index
+                packets[-1].sending_time = packets[-1].arriving_time + packets[-1].halt_time
+        # Update package halt time, if packages are still in queue.
+        for pkg in self.queue:
+            pkg.halt_time += 1
+        print(self.name + f' sends {len(packets)} packages to server {[a.target for a in packets]}.')
+        return packets
 
 
 class Server(Agent):
@@ -57,6 +75,7 @@ class Server(Agent):
         self.queue_max_len = queue_max_len
         self.acc_serving_t = 0
         self.busy_time = 0
+        self.leaving_pkgs = []
 
     def receive(self, package):
         self.queue.append(package)
@@ -71,6 +90,7 @@ class Server(Agent):
         return False
 
     def serve(self):
+        self.leaving_pkgs.clear()
         if not self.queue:
             self.busy_time = 0
             return
@@ -82,7 +102,7 @@ class Server(Agent):
         if self.busy_time == 0:
             self.acc_serving_t = self.queue[0].serving_time
         while self.acc_serving_t <= self.busy_time:
-            self.queue.pop(0)
+            self.leaving_pkgs.append(self.queue.pop(0))
             if self.queue:
                 self.acc_serving_t += self.queue[0].serving_time
             else:
@@ -97,6 +117,6 @@ class Server(Agent):
 
 class Action:
     def __init__(self):
-        self.a = 0
+        self.a = []
         self.c = 0
 

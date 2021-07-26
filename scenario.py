@@ -6,50 +6,41 @@ from packages import CreatePackage
 
 class Scenario:
     
-    def __init__(self, n_schedulers=3, n_servers=3, arrival_rate=9, serving_rate=10, queue_max_len=10, n_packages=100):
+    def __init__(self, conf):
 
-        self.dim_a = n_servers + 1
-        self.dim_c = 2
+        self.dim_a = conf['n_servers'] + 1
+        self.dim_c = conf['msg_bits']
 
-        self.packages = [CreatePackage(n_packages, arrival_rate) for _ in range(n_schedulers)]
+        self.packages = [CreatePackage(conf['n_packages'], conf['arrival_rate']) for _ in range(conf['n_schedulers'])]
 
-        self.schedulers = [Scheduler(i+1, self.dim_c) for i in range(n_schedulers)]
+        self.schedulers = [Scheduler(i+1, self.dim_c) for i in range(conf['n_schedulers'])]
         for i, scheduler in enumerate(self.schedulers):
             scheduler.name = f'scheduler_{i+1}'
-            scheduler.silent = True
+            scheduler.silent = conf['silent']
+            scheduler.c_noise = conf['c_noise']
 
-        self.servers = [Server(i+1, serving_rate, queue_max_len) for i in range(n_servers)]
+        self.servers = [Server(i+1, conf['serving_rate'], conf['queue_max_len']) for i in range(conf['n_servers'])]
         for i, server in enumerate(self.servers):
             server.name = f'server_{i+1}'
 
         self.drop_pkgs = {scheduler.name: 0 for scheduler in self.schedulers}
 
     def benchmark_data(self, scheduler):
-        pass
+        raise NotImplementedError()
     
     def reward(self, scheduler):
-        # If two schedulers have the same target queue, then the package will drop and get the reward -1
-        # cost message
+        # If two schedulers have the same target queue, then the package will drop and get the reward -1.
+        # If an agent sends a messge, then it will get a cost reward.
         rew = 0
         for other in self.schedulers:
             if other is not scheduler:
-                if self.is_collision(other, scheduler):
-                    rew -= 1
                 if self.send_msg(scheduler):
                     rew -= self.dim_c
         rew -= self.drop_pkgs[scheduler.name]
         return rew
 
-    def global_reward(self):
-        # The average queue length of all the servers.
-        rew = 0
-        for server in self.servers:
-            rew -= len(server)
-        rew = rew/len(self.servers)
-        return rew
-
     def observation(self, scheduler):
-        eps = 2
+        eps = 0.5
         # Get queue length of each server.
         queue_lens = []
         for server in self.servers:
@@ -57,6 +48,11 @@ class Scenario:
                 queue_lens.append(len(server))
             else:
                 queue_lens.append(0)
+
+        # queue_lens.append(len(scheduler))
+
+        if scheduler.silent:
+            return queue_lens
         # communication of all other schedulers
         comm = []
         for other in self.schedulers:
@@ -65,12 +61,11 @@ class Scenario:
             comm.append(other.msg)
         return np.concatenate([queue_lens] + comm)
 
-    def is_collision(self, scheduler1, scheduler2):
-        if scheduler1.action == scheduler2.action:
-            return True
-        return False
+    def env_state(self):
+        return [len(server) for server in self.servers]
 
     def send_msg(self, scheduler):
-        if scheduler.msg != [0] * self.dim_c:
+        """"""
+        if any(scheduler.msg):
             return True
         return False
