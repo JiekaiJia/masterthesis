@@ -1,3 +1,4 @@
+import bisect
 import json
 
 import gym
@@ -21,7 +22,7 @@ class QueueingNetwork(gym.Env):
 
         max_q_len = max([server.queue_max_len for server in self.scenario.servers])
 
-        # set spaces
+        # set action spaces and observation spaces.
         self.action_spaces = dict()
         self.observation_spaces = dict()
         for scheduler in self.scenario.schedulers:
@@ -31,14 +32,15 @@ class QueueingNetwork(gym.Env):
 
             obs_dim = len(self.scenario.observation(scheduler))
             self.action_spaces[scheduler.name] = spaces.Box(low=0, high=1, shape=(action_dim,), dtype=np.float32)
-            # self.action_spaces[scheduler.name] = spaces.Discrete(action_dim)
+            # observe its own length.
             self.observation_spaces[scheduler.name] = spaces.Box(low=0, high=max_q_len, shape=(obs_dim,), dtype=np.int32)
 
         self.rewards = {}
         self.dones = {scheduler: False for scheduler in self.schedulers}
         self.acc_drop_pkgs = {scheduler: 0 for scheduler in self.schedulers}
 
-        self.steps = 0
+        # global discrete timestep.
+        self.steps = 1
 
         self.current_actions = {}
 
@@ -69,50 +71,49 @@ class QueueingNetwork(gym.Env):
                 scenario_action = [softmax(action)]
 
             self._set_action(scenario_action, scheduler)
-        # Q length before server receives packages.
-        pre_q_len = {server.name: len(server) for server in self.scenario.servers}
 
-        # Send packages according to actions.
+        # Collect all schedulers' sending packages in order of time
+        transmit_q = []
         for scheduler in self.scenario.schedulers:
             key = scheduler.name
             self.scenario.drop_pkgs[key] = 0
+
             packages = self.scenario.packages[self._index_map[key]].packages
+            # If scheduler has no packages, then it will be set to done.
             if not scheduler and not packages:
                 self.dones[key] = True
             self._update_msg(scheduler)
             if self.dones[key]:
                 continue
-            # Scheduler will receive the packages.
             rec_pkgs = 0
+            # Scheduler will receive the packages when packages arriving time is smaller than global discrete timestep.
             while packages and self.steps >= packages[0].arriving_time:
                 rec_pkgs += 1
                 scheduler.receive(packages.pop(0))
             print(key + f' receives {rec_pkgs} packages.')
-            # Send packages according to actions
             if not scheduler:
                 continue
-
+            # Scheduler sends the packages.
             send_pkgs = scheduler.send()
 
             if not send_pkgs:
                 continue
-            # If server queue is not full.
-            for package in send_pkgs:
-                if not self.scenario.servers[package.target-1]:
-                    self.scenario.servers[package.target-1].receive(package)
-                else:
-                    self.scenario.drop_pkgs[key] += 1
-                    self.acc_drop_pkgs[key] += 1
+            # Collect the packages.
+            transmit_q.extend(send_pkgs)
+        # Sort packages in order of time
+        transmit_q.sort(key=lambda x: x.sending_time, reverse=False)
 
-        # Q length after server receives packages.
-        cur_q_len = {server.name: len(server) for server in self.scenario.servers}
-        for s in self.servers:
-            print(s + f' receives {cur_q_len[s] - pre_q_len[s]} packages.')
-
-        # Serve the package.
-        for server in self.scenario.servers:
-            server.serve()
-            print(f'{len(server.leaving_pkgs)} packages left ' + server.name + '.')
+        for package in transmit_q:
+            # Servers receive and serve the packages
+            dropped_pkgs = self.scenario.servers[package.target - 1].receive(package)
+            # If a package is dropped, then the corresponding scheduler would store the number.
+            if dropped_pkgs:
+                self.scenario.drop_pkgs[dropped_pkgs.sender] += 1
+                self.acc_drop_pkgs[dropped_pkgs.sender] += 1
+        else:
+            # Serve the packages that should departure before current timestep.
+            for server in self.scenario.servers:
+                server.serve(self.steps)
 
         # Calculate the rewards.
         for scheduler in self.scenario.schedulers:
@@ -124,7 +125,7 @@ class QueueingNetwork(gym.Env):
             self.rewards[scheduler.name] = scheduler_reward
 
     def _set_action(self, action, scheduler):
-        # set env action for a particular agent
+        # set env action for an agent
         scheduler.action.a = action[0]
         action = action[1:]
         if not scheduler.silent:

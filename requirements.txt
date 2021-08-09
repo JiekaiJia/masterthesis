@@ -2,5 +2,6 @@ gym==0.18.3
 numpy==1.19.5
 torch==1.8.1
 tensorflow
+ray[default]
 ray[rllib]
 ray[tune]

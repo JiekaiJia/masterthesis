@@ -1,4 +1,6 @@
-"""This module provide the basic agent classes, which consist environment."""
+"""This module provides the basic agent classes, which consist environment."""
+import bisect
+
 import math
 import numpy as np
 
@@ -16,7 +18,7 @@ class Agent:
     def send(self):
         raise NotImplementedError()
 
-    def serve(self):
+    def serve(self, pkg_arrival_t):
         raise NotImplementedError()
 
 
@@ -73,12 +75,25 @@ class Server(Agent):
         super().__init__(agent_id)
         self.serving_rate = serving_rate
         self.queue_max_len = queue_max_len
-        self.acc_serving_t = 0
-        self.busy_time = 0
         self.leaving_pkgs = []
 
     def receive(self, package):
-        self.queue.append(package)
+        # The time package arrives at server
+        pkg_arrival_t = package.sending_time
+        self.serve(pkg_arrival_t)
+        if len(self.queue) < 10:
+            # If server's queue is not full, then receives a package.
+            package.serving_time = self._serve_time()
+            if not self.queue:
+                package.departure_time = package.sending_time + package.serving_time
+            else:
+                package.departure_time = self.queue[-1].departure_time + package.serving_time
+
+            self.queue.append(package)
+        else:
+            # If server's queue is full, then drop.
+            return package
+        return None
 
     def __len__(self):
         return len(self.queue)
@@ -89,26 +104,20 @@ class Server(Agent):
             return True
         return False
 
-    def serve(self):
+    def serve(self, pkg_arrival_t):
+        n = len(self.queue)
         self.leaving_pkgs.clear()
         if not self.queue:
-            self.busy_time = 0
             return
-        for package in self.queue:
-            # Set a serving time for each package in queue.
-            if not package.serving_time:
-                package.serving_time = self._serve_time()
 
-        if self.busy_time == 0:
-            self.acc_serving_t = self.queue[0].serving_time
-        while self.acc_serving_t <= self.busy_time:
-            self.leaving_pkgs.append(self.queue.pop(0))
-            if self.queue:
-                self.acc_serving_t += self.queue[0].serving_time
+        for i in range(n):
+            # The former package leaves before current package arrives.
+            if self.queue[0].departure_time <= pkg_arrival_t:
+                self.leaving_pkgs.append(self.queue.pop(0))
+                if not self.queue:
+                    return
             else:
                 return
-        # Store how long a server works.
-        self.busy_time += 1
 
     def _serve_time(self):
         t = np.random.exponential(1 / self.serving_rate)
