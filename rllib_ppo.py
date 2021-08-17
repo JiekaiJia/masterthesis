@@ -20,8 +20,8 @@ if __name__ == '__main__':
     register_env(env_name, lambda _: RLlibEnv(config))
 
     # The used algorithm
-    # alg_name = 'PPO'
-    alg_name = 'DDPG'
+    alg_name = 'PPO'
+    # alg_name = 'DDPG'
     # Gets default training configuration.
     config = deepcopy(get_trainer_class(alg_name)._default_config)
 

@@ -39,6 +39,7 @@ class QueueingNetwork(gym.Env):
 
     def reset(self):
         self.rewards = {}
+        self.schedulers = [scheduler.name for scheduler in self.scenario.schedulers]
         self.infos = {scheduler: None for scheduler in self.schedulers}
         self.dones = {scheduler: False for scheduler in self.schedulers}
         self.acc_drop_pkgs = {scheduler: 0 for scheduler in self.schedulers}
