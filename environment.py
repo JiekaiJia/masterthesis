@@ -1,9 +1,10 @@
-import bisect
+import copy
 import json
 
 import gym
 from gym import spaces
 import numpy as np
+from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from scipy.special import softmax
 
 from scenario import Scenario
@@ -11,8 +12,6 @@ from scenario import Scenario
 
 class QueueingNetwork(gym.Env):
     def __init__(self, scenario):
-        self.seed()
-
         self.scenario = scenario
 
         self.schedulers = [scheduler.name for scheduler in self.scenario.schedulers]
@@ -35,16 +34,17 @@ class QueueingNetwork(gym.Env):
             # observe its own length.
             self.observation_spaces[scheduler.name] = spaces.Box(low=0, high=max_q_len, shape=(obs_dim,), dtype=np.int32)
 
-        self.rewards = {}
-        self.dones = {scheduler: False for scheduler in self.schedulers}
-        self.acc_drop_pkgs = {scheduler: 0 for scheduler in self.schedulers}
-
         # global discrete timestep.
         self.steps = 1
 
-        self.current_actions = {}
-
     def reset(self):
+        self.rewards = {}
+        self.infos = {scheduler: None for scheduler in self.schedulers}
+        self.dones = {scheduler: False for scheduler in self.schedulers}
+        self.acc_drop_pkgs = {scheduler: 0 for scheduler in self.schedulers}
+        self.current_actions = {}
+        self.steps = 1
+        self.scenario.reset()
         return {scheduler: np.zeros(self.observation_spaces[scheduler].shape) for scheduler in self.schedulers}
 
     def state(self):
@@ -52,13 +52,16 @@ class QueueingNetwork(gym.Env):
 
     def _execute_step(self):
         # Set action for each scheduler
-        for i, scheduler in enumerate(self.scenario.schedulers):
+        # print(self.schedulers)
+        # print(self.current_actions)
+        for name in self.schedulers:
+            scheduler = self.scenario.schedulers[self._index_map[name]]
             # Because actions are continuous actions*message actions, we choose message actions
             # according to continuous actions norm.
             row = -1
             if not scheduler.silent:
                 row = self.scenario.dim_c
-            acts = self.current_actions[i].reshape(row, -1)
+            acts = self.current_actions[self._index_map[name]].reshape(row, -1)
             act_norm = [np.linalg.norm(acts[x, :]) for x in range(row)]
             idx = np.argmax(act_norm)
 
@@ -74,7 +77,8 @@ class QueueingNetwork(gym.Env):
 
         # Collect all schedulers' sending packages in order of time
         transmit_q = []
-        for scheduler in self.scenario.schedulers:
+        for name in self.schedulers:
+            scheduler = self.scenario.schedulers[self._index_map[name]]
             key = scheduler.name
             self.scenario.drop_pkgs[key] = 0
 
@@ -90,7 +94,7 @@ class QueueingNetwork(gym.Env):
             while packages and self.steps >= packages[0].arriving_time:
                 rec_pkgs += 1
                 scheduler.receive(packages.pop(0))
-            print(key + f' receives {rec_pkgs} packages.')
+            # print(key + f' receives {rec_pkgs} packages.')
             if not scheduler:
                 continue
             # Scheduler sends the packages.
@@ -116,8 +120,9 @@ class QueueingNetwork(gym.Env):
                 server.serve(self.steps)
 
         # Calculate the rewards.
-        for scheduler in self.scenario.schedulers:
-            if self.dones[scheduler.name]:
+        for name in self.schedulers:
+            scheduler = self.scenario.schedulers[self._index_map[name]]
+            if self.dones[name]:
                 scheduler_reward = 0
             else:
                 scheduler_reward = float(self.scenario.reward(scheduler))
@@ -137,13 +142,25 @@ class QueueingNetwork(gym.Env):
 
     def _update_msg(self, scheduler):
         # set communication messages (directly for now)
-        scheduler.msg = np.zeros(self.scenario.dim_c)
+        # 1.method: Message is a mapping of observation.
+        # scheduler.msg = np.zeros(self.scenario.dim_c)
+        # if not scheduler.silent and not self.dones[scheduler.name]:
+        #     noise = np.random.randn(*scheduler.msg.shape) * scheduler.c_noise if scheduler.c_noise else 0.0
+        #     scheduler.msg[scheduler.action.c] = 1
+        #     scheduler.msg += noise
+
+        # 2.method: Message indicates weather to send observations, 0: not send, 1: send.
         if not scheduler.silent and not self.dones[scheduler.name]:
-            noise = np.random.randn(*scheduler.msg.shape) * scheduler.c_noise if scheduler.c_noise else 0.0
-            scheduler.msg[scheduler.action.c] = 1
-            scheduler.msg += noise
+            scheduler.msg = scheduler.action.c
 
     def step(self, actions):
+        for scheduler in self.schedulers:
+            if self.dones[scheduler]:
+                del self.dones[scheduler]
+                del self.rewards[scheduler]
+                del self.infos[scheduler]
+                self.schedulers.remove(scheduler)
+
         for scheduler, action in actions.items():
             self.current_actions[self._index_map[scheduler]] = action
 
@@ -152,48 +169,74 @@ class QueueingNetwork(gym.Env):
         observations = {scheduler: self.scenario.observation(self.scenario.schedulers[self._index_map[scheduler]]) for scheduler in self.schedulers}
         rewards = self.rewards
         dones = self.dones
+        infos = self.infos
+
         drop_pkgs = self.scenario.drop_pkgs
 
         self.steps += 1
-        return observations, rewards, dones, {'drop_pkgs': drop_pkgs, 'env_state': self.state()}
+        return observations, rewards, dones, infos
 
 
 class RawEnv(QueueingNetwork):
     def __init__(self, conf):
         scenario = Scenario(conf)
         super().__init__(scenario)
-        self.metadata['name'] = "simple_queueing_network_v1"
+        self.metadata['name'] = 'simple_queueing_network_v1'
 
 
-def all_done(dones):
-    for _, done in dones.items():
-        if not done:
-            return False
-    else:
-        return True
+class RLlibEnv(MultiAgentEnv):
+    """Wraps Queueing env to be compatible with RLLib multi-agent."""
+
+    def __init__(self, conf):
+        """Create a new queueing network env compatible with RLlib."""
+
+        self.raw_env = RawEnv(conf)
+
+        self.observation_spaces = self.raw_env.observation_spaces
+        self.action_spaces = self.raw_env.action_spaces
+        self.schedulers = self.raw_env.schedulers
+
+    def reset(self):
+        """Resets the env and returns observations from ready agents.
+        Returns:
+            obs_dict: New observations for each ready agent.
+        """
+        obss = self.raw_env.reset()
+        self.acc_drop_pkgs = self.raw_env.acc_drop_pkgs
+        return obss
+
+    def step(self, actions):
+        obss, rews, dones, infos = self.raw_env.step(actions)
+        infos = {k: {'done': done} for k, done in dones.items()}
+        _dones = [v for _, v in dones.items()]
+        dones_ = copy.deepcopy(dones)
+        dones_['__all__'] = all(_dones)
+        return obss, rews, dones_, infos
 
 
 if __name__ == '__main__':
     with open('./config/simple.json', 'r') as f:
         config = json.loads(f.read())
-    env = RawEnv(config)
-    obs = env.reset()
-    dones = env.dones
-    acc_r, t = 0, 0
-    while not all_done(dones):
-        t += 1
-        # Random policy
-        actions = {scheduler: softmax(action_space.sample()) for scheduler, action_space in env.action_spaces.items()}
-        obs, r, dones, info = env.step(actions)
-        for _, _r in r.items():
-            acc_r += _r
-        print('timestep:', t)
-        print('obs:', obs)
-        print('rewards:', r)
-        print('dones:', dones)
-        print(info)
-        print('_' * 80)
+    env = RLlibEnv(config)
+    dones = {}
+    for i in range(2):
+        obs = env.reset()
+        dones['__all__'] = False
+        acc_r, t = 0, 0
+        while not dones['__all__']:
+            t += 1
+            # Random policy
+            actions = {scheduler: softmax(action_space.sample()) for scheduler, action_space in env.action_spaces.items()}
+            obs, r, dones, info = env.step(actions)
+            for _, _r in r.items():
+                acc_r += _r
+            print('timestep:', t)
+            print('obs:', obs)
+            print('rewards:', r)
+            print('dones:', dones)
+            print(info)
+            print('_' * 80)
 
-    print('acc_rewwards:', acc_r)
-    print('acc_drop_pkgs:', env.acc_drop_pkgs)
+        print('acc_rewwards:', acc_r)
+        print('acc_drop_pkgs:', env.acc_drop_pkgs)
 

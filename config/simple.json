@@ -1,9 +1,9 @@
 {
-  "n_schedulers": 5,
-  "n_servers": 5,
+  "n_schedulers": 3,
+  "n_servers": 3,
   "arrival_rate": 9,
   "serving_rate": 10,
-  "queue_max_len": 10,
+  "queue_max_len": 5,
   "n_packages": 1000,
   "msg_bits": 2,
   "silent": false,

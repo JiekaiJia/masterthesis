@@ -32,6 +32,7 @@ class Scheduler(Agent):
         self.silent = True
         self.action = Action()
         self.msg = [0] * msg_bits
+        self.obs = None
         self.pkg_count = 0
 
     def receive(self, package):
@@ -66,7 +67,7 @@ class Scheduler(Agent):
         # Update package halt time, if packages are still in queue.
         for pkg in self.queue:
             pkg.halt_time += 1
-        print(self.name + f' sends {len(packets)} packages to server {[a.target for a in packets]}.')
+        # print(self.name + f' sends {len(packets)} packages to server {[a.target for a in packets]}.')
         return packets
 
 
@@ -81,7 +82,7 @@ class Server(Agent):
         # The time package arrives at server
         pkg_arrival_t = package.sending_time
         self.serve(pkg_arrival_t)
-        if len(self.queue) < 10:
+        if len(self.queue) < self.queue_max_len:
             # If server's queue is not full, then receives a package.
             package.serving_time = self._serve_time()
             if not self.queue:
