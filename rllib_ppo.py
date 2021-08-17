@@ -48,6 +48,7 @@ if __name__ == '__main__':
     # # === Debug Settings ===
     # # Periodically print out summaries of relevant internal dataflow(DEBUG, INFO, WARN, or ERROR.)
     config['log_level'] = 'ERROR'
+    config['no_done_at_end'] = True
 
     # === Settings for Multi-Agent Environments ===
     # Configuration for multi-agent setup with policy sharing:
@@ -70,7 +71,7 @@ if __name__ == '__main__':
 
     # Stop criteria
     stop = {
-        "training_iteration": 50,
+        "training_iteration": 150,
     }
 
     # Train
