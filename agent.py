@@ -32,7 +32,6 @@ class Scheduler(Agent):
         self.silent = True
         self.action = Action()
         self.msg = [0] * msg_bits
-        self.obs = None
         self.pkg_count = 0
 
     def receive(self, package):

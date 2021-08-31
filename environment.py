@@ -7,7 +7,7 @@ import numpy as np
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from scipy.special import softmax
 
-from scenario import Scenario
+from scenario import SimpleScenario, FixPartialAccessScenario
 
 
 class QueueingNetwork(gym.Env):
@@ -18,6 +18,7 @@ class QueueingNetwork(gym.Env):
         self.servers = [server.name for server in self.scenario.servers]
         self.num_schedulers = len(self.schedulers)
         self._index_map = {scheduler.name: idx for idx, scheduler in enumerate(self.scenario.schedulers)}
+        self.messages = {scheduler.name: scheduler.msg for idx, scheduler in enumerate(self.scenario.schedulers)}
 
         max_q_len = max([server.queue_max_len for server in self.scenario.servers])
 
@@ -53,8 +54,6 @@ class QueueingNetwork(gym.Env):
 
     def _execute_step(self):
         # Set action for each scheduler
-        # print(self.schedulers)
-        # print(self.current_actions)
         for name in self.schedulers:
             scheduler = self.scenario.schedulers[self._index_map[name]]
             # Because actions are continuous actions*message actions, we choose message actions
@@ -144,15 +143,16 @@ class QueueingNetwork(gym.Env):
     def _update_msg(self, scheduler):
         # set communication messages (directly for now)
         # 1.method: Message is a mapping of observation.
-        # scheduler.msg = np.zeros(self.scenario.dim_c)
-        # if not scheduler.silent and not self.dones[scheduler.name]:
-        #     noise = np.random.randn(*scheduler.msg.shape) * scheduler.c_noise if scheduler.c_noise else 0.0
-        #     scheduler.msg[scheduler.action.c] = 1
-        #     scheduler.msg += noise
+        scheduler.msg = np.zeros(self.scenario.dim_c)
+        if not scheduler.silent and not self.dones[scheduler.name]:
+            noise = np.random.randn(*scheduler.msg.shape) * scheduler.c_noise if scheduler.c_noise else 0.0
+            scheduler.msg[scheduler.action.c] = 1
+            scheduler.msg += noise
+            self.messages[scheduler.name] = scheduler.msg
 
         # 2.method: Message indicates weather to send observations, 0: not send, 1: send.
-        if not scheduler.silent and not self.dones[scheduler.name]:
-            scheduler.msg = scheduler.action.c
+        # if not scheduler.silent and not self.dones[scheduler.name]:
+        #     scheduler.msg = scheduler.action.c
 
     def step(self, actions):
         for scheduler in self.schedulers:
@@ -180,7 +180,7 @@ class QueueingNetwork(gym.Env):
 
 class RawEnv(QueueingNetwork):
     def __init__(self, conf):
-        scenario = Scenario(conf)
+        scenario = FixPartialAccessScenario(conf)
         super().__init__(scenario)
         self.metadata['name'] = 'simple_queueing_network_v1'
 
@@ -215,12 +215,43 @@ class RLlibEnv(MultiAgentEnv):
         return obss, rews, dones_, infos
 
 
+class MainEnv:
+    """"""
+
+    def __init__(self, conf):
+        """"""
+
+        self.raw_env = RawEnv(conf)
+
+        self.observation_spaces = self.raw_env.observation_spaces
+        self.action_spaces = self.raw_env.action_spaces
+        self.schedulers = self.raw_env.schedulers
+        self.messages = self.raw_env.messages
+
+    def reset(self):
+        """Resets the env and returns observations from ready agents.
+        Returns:
+            obs_dict: New observations for each ready agent.
+        """
+        obss = self.raw_env.reset()
+        self.acc_drop_pkgs = self.raw_env.acc_drop_pkgs
+        return obss
+
+    def step(self, actions):
+        obss, rews, dones, infos = self.raw_env.step(actions)
+        infos = self.messages
+        _dones = [v for _, v in dones.items()]
+        dones_ = copy.deepcopy(dones)
+        dones_['__all__'] = all(_dones)
+        return obss, rews, dones_, infos
+
+
 if __name__ == '__main__':
-    with open('./config/simple.json', 'r') as f:
+    with open('./config/FixPartialAccess.json', 'r') as f:
         config = json.loads(f.read())
-    env = RLlibEnv(config)
+    env = MainEnv(config)
     dones = {}
-    for i in range(2):
+    for i in range(1):
         obs = env.reset()
         dones['__all__'] = False
         acc_r, t = 0, 0
@@ -235,7 +266,7 @@ if __name__ == '__main__':
             print('obs:', obs)
             print('rewards:', r)
             print('dones:', dones)
-            print(info)
+            print('messages:', info)
             print('_' * 80)
 
         print('acc_rewwards:', acc_r)
