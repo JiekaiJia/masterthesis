@@ -23,16 +23,18 @@ class Agent:
 
 
 class Scheduler(Agent):
-    """Scheduler actions: 0 --> don't send message
+    """Scheduler actions: 0 --> don't send packages
                           1 --> send to server 1
                           2 --> send to server 2
     """
-    def __init__(self, agent_id, msg_bits):
+    def __init__(self, agent_id):
         super().__init__(agent_id)
         self.silent = True
         self.action = Action()
-        self.msg = [0] * msg_bits
+        self.msg = [0]
         self.pkg_count = 0
+        # A list of server objects.
+        self.obs_servers = []
 
     def receive(self, package):
         self.queue.append(package)
@@ -61,7 +63,7 @@ class Scheduler(Agent):
                 continue
             for _ in range(pkg_num):
                 packets.append(self.queue.pop(0))
-                packets[-1].target = act_index
+                packets[-1].target = act_index if not self.obs_servers else self.obs_servers[act_index-1].id
                 packets[-1].sending_time = packets[-1].arriving_time + packets[-1].halt_time
         # Update package halt time, if packages are still in queue.
         for pkg in self.queue:
@@ -76,6 +78,8 @@ class Server(Agent):
         self.serving_rate = serving_rate
         self.queue_max_len = queue_max_len
         self.leaving_pkgs = []
+        self.access_schedulers = []
+        self.history_len = [0]
 
     def receive(self, package):
         # The time package arrives at server

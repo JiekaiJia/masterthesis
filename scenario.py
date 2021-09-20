@@ -1,4 +1,5 @@
 import math
+import random
 
 import numpy as np
 
@@ -10,11 +11,9 @@ class BasicScenario:
 
     def __init__(self, conf):
         self.conf = conf
-        # Define communication action dimension.
-        self.dim_c = conf['msg_bits']
 
         # Initialize schedulers.
-        self.schedulers = [Scheduler(i + 1, self.dim_c) for i in range(conf['n_schedulers'])]
+        self.schedulers = [Scheduler(i + 1) for i in range(conf['n_schedulers'])]
         for i, scheduler in enumerate(self.schedulers):
             scheduler.name = f'scheduler_{i + 1}'
             scheduler.silent = conf['silent']
@@ -60,13 +59,18 @@ class BasicScenario:
 
 
 class SimpleScenario(BasicScenario):
+    """This scenario"""
     
     def __init__(self, conf):
-        self.dim_a = conf['n_servers'] + 1
         super().__init__(conf)
+        self.dim_a = conf['n_servers'] + 1
+        # Define communication action dimension.
+        self.dim_c = conf['msg_bits']
+        for i, scheduler in enumerate(self.schedulers):
+            scheduler.msg = [0]*self.dim_c
 
     def observation(self, scheduler):
-        eps = 1
+        eps = 0.5
         # Get queue length of each server.
         queue_lens = []
         for server in self.servers:
@@ -85,49 +89,39 @@ class SimpleScenario(BasicScenario):
             if other is scheduler:
                 continue
             comm.append(other.msg)
-            # message indicates scheduler weather to ask other's observations.
-            # if scheduler.msg and other.obs:
-            #     comm.append(other.obs)
-            # else:
-            #     comm.append([0]*len(queue_lens))
         return np.concatenate([queue_lens] + comm)
 
 
 class FixPartialAccessScenario(BasicScenario):
+    """This scenario has a delay time for information transmission and each scheduler can only observe and access
+    partial servers. The transmission delay will change every 10 seconds and the partial access is fixed initially."""
 
     def __init__(self, conf):
         super().__init__(conf)
+        self.delay_t = conf['delay_time']
         self.obs_servers = conf['obs_servers']
         self.dim_a = self.obs_servers + 1
-        # The server that each scheduler can observe and access.
-        self.obs_dict = {scheduler.name: [self.servers[(i+j) % len(self.servers)] for j in range(self.obs_servers)] for i, scheduler in enumerate(self.schedulers)}
-        # todo: not flexible enough, it's fixed.
-        self.same_access_schedulers = {scheduler.name: [self.schedulers[i-1], self.schedulers[(i+1) % len(self.servers)]] for i, scheduler in enumerate(self.schedulers)}
-        # print({k: [v[0].name, v[1].name] for k,v in self.obs_dict.items()})
-        # print({k: [v[0].name, v[1].name] for k,v in self.same_access_schedulers.items()})
-        # self.serve_schedulers = {server.name: [] for server in self.servers}
-        # for server in self.servers:
-        #     for k, v in self.obs_dict.items():
-        #         if server in v:
-        #             self.serve_schedulers[server.name].append(k)
+        # The servers that each scheduler can observe and access.
+        idxs = [i for i in range(len(self.servers))]
+        random.shuffle(idxs)
+        for i, scheduler in enumerate(self.schedulers):
+            for j in range(self.obs_servers):
+                scheduler.obs_servers.append(self.servers[idxs[(i+j) % len(idxs)]])
+                self.servers[idxs[(i + j) % len(idxs)]].access_schedulers.append(scheduler)
 
     def observation(self, scheduler):
-        eps = 1
+        eps = 0.5
         # Get queue length of each server.
         queue_lens = []
-        for server in self.obs_dict[scheduler.name]:
-            if np.random.randn() < eps:
-                queue_lens.append(len(server))
-            else:
+        for server in scheduler.obs_servers:
+            # If time step is smaller than delay time, then observe 0
+            if len(server.history_len) <= self.delay_t:
                 queue_lens.append(0)
+            # If time step is larger than felay time, then observe queue length 2 time step ago.
+            else:
+                if np.random.randn() < eps:
+                    queue_lens.append(server.history_len.pop(0))
+                else:
+                    queue_lens.append(0)
 
-        if scheduler.silent:
-            return queue_lens
-        # Message from the other schedulers that have the same server access.
-        comm = []
-        for other in self.same_access_schedulers[scheduler.name]:
-            if other is scheduler:
-                continue
-            comm.append(other.msg)
-
-        return np.concatenate([queue_lens] + comm)
+        return queue_lens
