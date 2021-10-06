@@ -1,14 +1,15 @@
 import copy
 import json
-import math
 
 import gym
+import torch
 from gym import spaces
 import numpy as np
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from scipy.special import softmax
 
-from scenario import SimpleScenario, FixPartialAccessScenario
+from models import MVAE
+from scenario import SimpleScenario, PartialAccessScenario, PartialcommScenario
 
 
 class BasicNetwork(gym.Env):
@@ -199,10 +200,11 @@ class QueueingNetwork1(BasicNetwork):
 
 
 class QueueingNetwork2(BasicNetwork):
-    """In this network the schedulers have a probability to decide whether to communicate.
-    And the beliefs over queue state as messages."""
+    """In this network the schedulers observe queue state with a transmit delay. This delay time will change every
+    n steps. Besides, the schedulers only have partial access and observability to the queue."""
     def __init__(self, scenario):
         super().__init__(scenario)
+        self.frequency = self.scenario.frequency
 
         self.max_q_len = max([server.queue_max_len for server in self.scenario.servers])
 
@@ -215,13 +217,8 @@ class QueueingNetwork2(BasicNetwork):
             obs_dim = len(self.scenario.observation(scheduler))
             # Action space is the action distribution + communication probability.
             self.action_spaces[scheduler.name] = spaces.Box(low=0, high=1, shape=(action_dim+1,), dtype=np.float32)
-            # todo if using Rllib, then what is the observation space (beliefs or queue state.)
-            # observe its own length.
-            # self.observation_spaces[scheduler.name] = spaces.Box(low=0, high=self.max_q_len, shape=(obs_dim,), dtype=np.int32)
-            # Belief as observation, the scheduler thinks how many packages are in the queue.
-            self.observation_spaces[scheduler.name] = spaces.Box(low=0, high=1,
-                                                                 shape=(self.scenario.obs_servers, self.max_q_len + 1),
-                                                                 dtype=np.int32)
+            # observe queue's length.
+            self.observation_spaces[scheduler.name] = spaces.Box(low=0, high=self.max_q_len, shape=(obs_dim,), dtype=np.int32)
 
     def reset(self):
         super().reset()
@@ -237,8 +234,8 @@ class QueueingNetwork2(BasicNetwork):
 
     def step(self, actions):
         # Check whether the scheduler is done, if done then delete it.
-        for scheduler in self.schedulers:
-            self.dlt_agent(scheduler)
+        # for scheduler in self.schedulers:
+        #     self.dlt_agent(scheduler)
         # Set the current action distribution and communication probability.
         for scheduler, action in actions.items():
             self.current_actions[scheduler] = action[:-1]
@@ -249,25 +246,64 @@ class QueueingNetwork2(BasicNetwork):
 
         for server in self.scenario.servers:
             server.history_len.append(len(server))
-
-        # print({server.name: server.history_len for server in self.scenario.servers})
-        # A mapping of observations
-        beliefs = {scheduler: softmax(np.random.randn(self.scenario.obs_servers, self.max_q_len+1), axis=1) for scheduler in self.schedulers}
-        for scheduler in self.schedulers:
-            sce_scheduler = self.scenario.schedulers[self._index_map[scheduler]]
-            if not sce_scheduler.silent and self.p[scheduler] > 0.5:
-                for k, server in enumerate(self.scenario.schedulers[self._index_map[scheduler]].obs_servers):
-                    # Input of the POE.
-                    bel = [beliefs[s.name][s.obs_servers.index(server), :] for s in server.access_schedulers]
-                    beliefs[scheduler][k, :] = softmax(np.random.normal(loc=0, scale=1, size=self.max_q_len+1))
-
+        # Change the delay time every n steps.
+        if self.steps % self.frequency == 0:
+            self.scenario.set_delay_t(np.random.randint(0, 6))
         self.steps += 1
-        return beliefs, self.rewards, self.dones, self.infos
+        return self.observe(), self.rewards, self.dones, self.infos
 
 
-class RawEnv(QueueingNetwork2):
+class QueueingNetwork3(QueueingNetwork2):
+    """This network is based on the configurations of Queueingnetwork2, and addresses beliefs over queue state
+    as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
+    def __init__(self, scenario):
+        super().__init__(scenario)
+        self.training = self.scenario.conf['training']
+        self.bs = self.scenario.conf['bs']
+
+        # set observation spaces.
+        for scheduler in self.scenario.schedulers:
+            # Belief as observation, the scheduler thinks how many packages are in the queue.
+            self.observation_spaces[scheduler.name] = spaces.Box(low=0, high=1,
+                                                                 shape=(self.scenario.obs_servers, self.max_q_len + 1),
+                                                                 dtype=np.int32)
+
+        # Not every scenario has the comm_group.
+        try:
+            self.comm_group = self.scenario.comm_group
+        except AttributeError:
+            pass
+
+        self.model = MVAE(self.max_q_len + 1, len(self.schedulers), self.max_q_len + 1,
+                          self.observation_spaces[self.schedulers[0]].shape[0],
+                          self.scenario.schedulers, self.training, self.bs, self.comm_group)
+
+    def step(self, actions):
+        observations, rewards, dones, infos = super().step(actions)
+        # Transform observations to NxL tensors, where N is the number of schedulers
+        # and L is the length of observations.
+        obs = []
+        for _, v in observations.items():
+            obs.append(torch.from_numpy(np.array(v)))
+        if self.training:
+            self.model.train()
+            self.p = {scheduler: 1 for scheduler in self.schedulers}
+        else:
+            self.model.eval()
+        recon_obs, mu, logvar = self.model(self.p, obs)
+
+        recon_obss = []
+        for x in recon_obs:
+            recon_obss.append(torch.cat([y.argmax().unsqueeze(0) for y in x], dim=0))
+
+        # beliefs = {scheduler: mu[i].cpu().detach().numpy().tolist() for i, scheduler in enumerate(self.schedulers)}
+
+        return [obs, recon_obs, mu, logvar, recon_obss], self.rewards, self.dones, self.infos
+
+
+class RawEnv(QueueingNetwork3):
     def __init__(self, conf):
-        scenario = FixPartialAccessScenario(conf)
+        scenario = PartialcommScenario(conf)
         super().__init__(scenario)
         self.metadata['name'] = 'simple_queueing_network_v1'
 
@@ -294,12 +330,23 @@ class RLlibEnv(MultiAgentEnv):
         return obss
 
     def step(self, actions):
+        # Check whether the scheduler is done, if done then delete it.
+        for scheduler in self.schedulers:
+            self.dlt_agent(scheduler)
         obss, rews, dones, infos = self.raw_env.step(actions)
+        beliefs = {scheduler: obss[2][i].cpu().detach().numpy().tolist() for i, scheduler in enumerate(self.schedulers)}
         infos = {k: {'done': done} for k, done in dones.items()}
         _dones = [v for _, v in dones.items()]
         dones_ = copy.deepcopy(dones)
         dones_['__all__'] = all(_dones)
-        return obss, rews, dones_, infos
+        return beliefs, rews, dones_, infos
+
+    def dlt_agent(self, scheduler):
+        if self.dones[scheduler]:
+            del self.dones[scheduler]
+            del self.rewards[scheduler]
+            del self.infos[scheduler]
+            self.schedulers.remove(scheduler)
 
 
 class MainEnv:
@@ -313,6 +360,7 @@ class MainEnv:
         self.observation_spaces = self.raw_env.observation_spaces
         self.action_spaces = self.raw_env.action_spaces
         self.schedulers = self.raw_env.schedulers
+        self.model = self.raw_env.model
         self.messages = self.raw_env.messages
 
     def reset(self):
@@ -336,8 +384,38 @@ class MainEnv:
         return obss, rews, dones_, infos
 
 
+class VectorEnv:
+    def __init__(self, make_env_fn, n):
+        self.envs = tuple(make_env_fn() for _ in range(n))
+
+    # Call this only once at the beginning of training (optional):
+    def seed(self, seeds):
+        assert len(self.envs) == len(seeds)
+        return tuple(env.seed(s) for env, s in zip(self.envs, seeds))
+
+    # Call this only once at the beginning of training:
+    def reset(self):
+        return tuple(env.reset() for env in self.envs)
+
+    # Call this on every timestep:
+    def step(self, actions):
+        assert len(self.envs) == len(actions)
+        return_values = []
+        for env, a in zip(self.envs, actions):
+            observation, reward, done, info = env.step(a)
+            if done:
+                observation = env.reset()
+            return_values.append((observation, reward, done, info))
+        return tuple(return_values)
+
+    # Call this at the end of training:
+    def close(self):
+        for env in self.envs:
+            env.close()
+
+
 if __name__ == '__main__':
-    with open('./config/FixPartialAccess.json', 'r') as f:
+    with open('config/PartialAccess.json', 'r') as f:
         config = json.loads(f.read())
     env = MainEnv(config)
     dones = {}
@@ -354,10 +432,10 @@ if __name__ == '__main__':
                 acc_r += _r
             print('timestep:', t)
             print('state:', env.state())
-            print('obs:', obs)
+            print('obs:', obs[1])
             print('rewards:', r)
             print('dones:', dones)
-            print('messages:', info)
+            # print('messages:', info)
             print('_' * 80)
 
         print('acc_rewwards:', acc_r)

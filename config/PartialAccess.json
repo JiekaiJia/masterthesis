@@ -1,0 +1,18 @@
+{
+  "n_schedulers": 5,
+  "n_servers": 5,
+  "arrival_rate": 9,
+  "serving_rate": 10,
+  "queue_max_len": 5,
+  "n_packages": 500,
+  "silent": false,
+  "c_noise": null,
+  "nepisodes": 500,
+  "obs_servers": 3,
+  "delay_time": 2,
+  "bs": 1,
+  "lr": 1e-4,
+  "delay_change_frequency": 10,
+  "env_name": "simple_queueing_v2",
+  "training": true
+}

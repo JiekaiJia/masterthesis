@@ -59,7 +59,7 @@ class BasicScenario:
 
 
 class SimpleScenario(BasicScenario):
-    """This scenario"""
+    """This scenario has no delay time."""
     
     def __init__(self, conf):
         super().__init__(conf)
@@ -92,7 +92,7 @@ class SimpleScenario(BasicScenario):
         return np.concatenate([queue_lens] + comm)
 
 
-class FixPartialAccessScenario(BasicScenario):
+class PartialAccessScenario(BasicScenario):
     """This scenario has a delay time for information transmission and each scheduler can only observe and access
     partial servers. The transmission delay will change every 10 seconds and the partial access is fixed initially."""
 
@@ -100,6 +100,7 @@ class FixPartialAccessScenario(BasicScenario):
         super().__init__(conf)
         self.delay_t = conf['delay_time']
         self.obs_servers = conf['obs_servers']
+        self.frequency = conf['delay_change_frequency']
         self.dim_a = self.obs_servers + 1
         # The servers that each scheduler can observe and access.
         idxs = [i for i in range(len(self.servers))]
@@ -109,19 +110,45 @@ class FixPartialAccessScenario(BasicScenario):
                 scheduler.obs_servers.append(self.servers[idxs[(i+j) % len(idxs)]])
                 self.servers[idxs[(i + j) % len(idxs)]].access_schedulers.append(scheduler)
 
+    def set_delay_t(self, value):
+        self.delay_t = value
+
     def observation(self, scheduler):
-        eps = 0.5
+        # 95% confidence interval.
+        eps = 1.65
         # Get queue length of each server.
         queue_lens = []
         for server in scheduler.obs_servers:
             # If time step is smaller than delay time, then observe 0
             if len(server.history_len) <= self.delay_t:
                 queue_lens.append(0)
-            # If time step is larger than felay time, then observe queue length 2 time step ago.
+            # If time step is larger than delay time, then observe the queue length that is 2 time step ago.
             else:
-                if np.random.randn() < eps:
-                    queue_lens.append(server.history_len.pop(0))
-                else:
-                    queue_lens.append(0)
-
+                # if np.random.randn() < eps:
+                #     queue_lens.append(server.history_len[-1-self.delay_t])
+                # else:
+                #     queue_lens.append(0)
+                queue_lens.append(server.history_len[-1-self.delay_t])
         return queue_lens
+
+
+class PartialcommScenario(PartialAccessScenario):
+    """This scenario inherits from class PartialAccessScenario. It defines the communications between agents."""
+
+    def __init__(self, conf):
+        super().__init__(conf)
+        self.comm_group = {}
+        self.set_comm_group()
+
+    def set_comm_group(self):
+        # Each scheduler has a communication group, in which the agents share the same partial access.
+        # comm_group is a dict, whose key is object scheduler, value is a list of lists, lists include the schedulers
+        # that have the same access queues.
+        for scheduler in self.schedulers:
+            self.comm_group[scheduler] = []
+            for k, server in enumerate(scheduler.obs_servers):
+                tmp = []
+                for other in server.access_schedulers:
+                    if other is not scheduler:
+                        tmp.append(other)
+                self.comm_group[scheduler].append(tmp)
