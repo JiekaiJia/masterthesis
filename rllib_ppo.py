@@ -7,17 +7,20 @@ from ray.rllib.agents.registry import get_trainer_class
 from ray import tune
 from ray.tune.registry import register_env
 
+from dotdic import DotDic
 from environment import RLlibEnv
 
 
 if __name__ == '__main__':
-    with open('./config/simple.json', 'r') as f:
-        config = json.loads(f.read())
+    with open('./config/PartialAccess.json', 'r') as f:
+        conf = json.loads(f.read())
+
+    conf['training'] = False
     # Create test environment.
-    test_env = RLlibEnv(config)
+    test_env = RLlibEnv(DotDic(conf))
     # Register env
-    env_name = config['env_name']
-    register_env(env_name, lambda _: RLlibEnv(config))
+    env_name = conf['env_name']
+    register_env(env_name, lambda _: RLlibEnv(DotDic(conf)))
 
     # The used algorithm
     alg_name = 'PPO'
@@ -38,6 +41,10 @@ if __name__ == '__main__':
         'fcnet_hiddens': [128],
         'fcnet_activation': 'relu',
         'vf_share_layers': False,
+        'use_lstm': True,
+        'max_seq_len': 40,
+        'lstm_use_prev_action': True,
+        'lstm_use_prev_reward': True,
     }
 
     # === Environment Settings ===
@@ -47,7 +54,7 @@ if __name__ == '__main__':
 
     # # === Debug Settings ===
     # # Periodically print out summaries of relevant internal dataflow(DEBUG, INFO, WARN, or ERROR.)
-    config['log_level'] = 'ERROR'
+    config['log_level'] = 'DEBUG'
     config['no_done_at_end'] = True
 
     # === Settings for Multi-Agent Environments ===
@@ -65,13 +72,13 @@ if __name__ == '__main__':
 
     # Initialize ray and trainer object
     ray.init(
-        ignore_reinit_error=True,
+        # ignore_reinit_error=True,
         # log_to_driver=False
     )
 
     # Stop criteria
     stop = {
-        "training_iteration": 150,
+        "training_iteration": 3000,
     }
 
     # Train
@@ -80,7 +87,7 @@ if __name__ == '__main__':
         stop=stop,
         config=config,
         checkpoint_at_end=True,
-        local_dir='./ray_results',
+        local_dir='./ray_results'
     )
 
     # Get the tuple of checkpoint_path and metric

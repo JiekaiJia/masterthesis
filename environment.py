@@ -233,9 +233,6 @@ class QueueingNetwork2(BasicNetwork):
             scheduler.action.a = softmax(self.current_actions[name])
 
     def step(self, actions):
-        # Check whether the scheduler is done, if done then delete it.
-        # for scheduler in self.schedulers:
-        #     self.dlt_agent(scheduler)
         # Set the current action distribution and communication probability.
         for scheduler, action in actions.items():
             self.current_actions[scheduler] = action[:-1]
@@ -258,15 +255,13 @@ class QueueingNetwork3(QueueingNetwork2):
     as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
     def __init__(self, scenario):
         super().__init__(scenario)
-        self.training = self.scenario.conf['training']
-        self.bs = self.scenario.conf['bs']
+        self.training = self.scenario.conf.training
+        self.bs = self.scenario.conf.bs
 
         # set observation spaces.
         for scheduler in self.scenario.schedulers:
             # Belief as observation, the scheduler thinks how many packages are in the queue.
-            self.observation_spaces[scheduler.name] = spaces.Box(low=0, high=1,
-                                                                 shape=(self.scenario.obs_servers, self.max_q_len + 1),
-                                                                 dtype=np.int32)
+            self.observation_spaces[scheduler.name] = spaces.Box(low=float('-inf'), high=float('inf'), shape=(self.scenario.obs_servers, self.max_q_len + 1 + 1), dtype=np.float32)
 
         # Not every scenario has the comm_group.
         try:
@@ -278,30 +273,63 @@ class QueueingNetwork3(QueueingNetwork2):
                           self.observation_spaces[self.schedulers[0]].shape[0],
                           self.scenario.schedulers, self.training, self.bs, self.comm_group)
 
+        if not self.training:
+            self.model.load_state_dict(
+                torch.load(self.scenario.conf.check_path + '/' + 'belief_encoder50.pth')['state_dict']
+            )
+
     def step(self, actions):
+        # todo: if a scheduler has seen q1,q2,q3 during training,
+        # todo: then what if it sees q4,q5,q6 in the future, the trained model can be used as normal?
         observations, rewards, dones, infos = super().step(actions)
         # Transform observations to NxL tensors, where N is the number of schedulers
         # and L is the length of observations.
-        obs = []
-        for _, v in observations.items():
-            obs.append(torch.from_numpy(np.array(v)))
+        obs = [None] * self.num_schedulers
+        real_obs = [None] * self.num_schedulers
+        for k, v in observations.items():
+            obs[self._index_map[k]] = torch.from_numpy(np.array(v[0]))
+            real_obs[self._index_map[k]] = torch.from_numpy(np.array(v[1]))
+
         if self.training:
             self.model.train()
             self.p = {scheduler: 1 for scheduler in self.schedulers}
+            recon_obs, mu, logvar = self.model(self.p, obs)
         else:
             self.model.eval()
-        recon_obs, mu, logvar = self.model(self.p, obs)
+            with torch.no_grad():
+                recon_obs, mu, logvar = self.model(self.p, obs)
+        recon_obs0, mu0, logvar0 = self.model({scheduler: 0 for scheduler in self.schedulers}, obs)
 
         recon_obss = []
         for x in recon_obs:
-            recon_obss.append(torch.cat([y.argmax().unsqueeze(0) for y in x], dim=0))
+            if x is None:
+                recon_obss.append(torch.zeros((1, self.scenario.obs_servers)))
+            else:
+                recon_obss.append(torch.cat([y.argmax().unsqueeze(0) for y in x], dim=0))
+        recon_obss0 = []
+        for x in recon_obs0:
+            if x is None:
+                recon_obss0.append(torch.zeros((1, self.scenario.obs_servers)))
+            else:
+                recon_obss0.append(torch.cat([y.argmax().unsqueeze(0) for y in x], dim=0))
 
-        # beliefs = {scheduler: mu[i].cpu().detach().numpy().tolist() for i, scheduler in enumerate(self.schedulers)}
-
-        return [obs, recon_obs, mu, logvar, recon_obss], self.rewards, self.dones, self.infos
+        return (obs, recon_obs, mu, logvar, recon_obss, recon_obs0, mu0, logvar0, recon_obss0, real_obs), self.rewards, self.dones, self.infos
 
 
-class RawEnv(QueueingNetwork3):
+class QueueingNetwork4(QueueingNetwork3):
+    """This environment deletes the done schedulers during episodes to keep compatible with RLlib."""
+
+    def __init__(self, scenario):
+        super().__init__(scenario)
+
+    def step(self, actions):
+        # Check whether the scheduler is done, if done then delete it.
+        for scheduler in self.schedulers:
+            self.dlt_agent(scheduler)
+        return super().step(actions)
+
+
+class RawEnv(QueueingNetwork4):
     def __init__(self, conf):
         scenario = PartialcommScenario(conf)
         super().__init__(scenario)
@@ -326,35 +354,24 @@ class RLlibEnv(MultiAgentEnv):
             obs_dict: New observations for each ready agent.
         """
         obss = self.raw_env.reset()
+        self.schedulers = self.raw_env.schedulers
         self.acc_drop_pkgs = self.raw_env.acc_drop_pkgs
         return obss
 
     def step(self, actions):
-        # Check whether the scheduler is done, if done then delete it.
-        for scheduler in self.schedulers:
-            self.dlt_agent(scheduler)
         obss, rews, dones, infos = self.raw_env.step(actions)
-        beliefs = {scheduler: obss[2][i].cpu().detach().numpy().tolist() for i, scheduler in enumerate(self.schedulers)}
-        infos = {k: {'done': done} for k, done in dones.items()}
-        _dones = [v for _, v in dones.items()]
-        dones_ = copy.deepcopy(dones)
-        dones_['__all__'] = all(_dones)
-        return beliefs, rews, dones_, infos
-
-    def dlt_agent(self, scheduler):
-        if self.dones[scheduler]:
-            del self.dones[scheduler]
-            del self.rewards[scheduler]
-            del self.infos[scheduler]
-            self.schedulers.remove(scheduler)
+        self.schedulers = self.raw_env.schedulers
+        belief = {scheduler: torch.cat(obss[1][self.raw_env._index_map[scheduler]], dim=0).cpu().numpy() for scheduler in self.schedulers}
+        new_obs = {k: np.concatenate((v, np.array(obss[0][self.raw_env._index_map[k]]).reshape(5, 1)), axis=1) for k, v in belief.items()}
+        dones_ = {k: dones[k] for k in self.schedulers}
+        dones_['__all__'] = all(dones.values())
+        infos = {k: {'done': dones[k]} for k in self.schedulers}
+        return new_obs, rews, dones_, infos
 
 
 class MainEnv:
     """"""
-
     def __init__(self, conf):
-        """"""
-
         self.raw_env = RawEnv(conf)
 
         self.observation_spaces = self.raw_env.observation_spaces
@@ -385,17 +402,22 @@ class MainEnv:
 
 
 class VectorEnv:
-    def __init__(self, make_env_fn, n):
-        self.envs = tuple(make_env_fn() for _ in range(n))
+    def __init__(self, make_env_fn, n, config):
+        self.envs = tuple(make_env_fn(config) for _ in range(n))
+        self.action_spaces = self.envs[0].action_spaces
 
     # Call this only once at the beginning of training (optional):
     def seed(self, seeds):
         assert len(self.envs) == len(seeds)
         return tuple(env.seed(s) for env, s in zip(self.envs, seeds))
 
-    # Call this only once at the beginning of training:
+    def state(self):
+        return tuple(env.state() for env in self.envs)
+
     def reset(self):
-        return tuple(env.reset() for env in self.envs)
+        return_value = tuple(env.reset() for env in self.envs)
+        self.acc_drop_pkgs = (env.acc_drop_pkgs for env in self.envs)
+        return return_value
 
     # Call this on every timestep:
     def step(self, actions):
@@ -403,41 +425,56 @@ class VectorEnv:
         return_values = []
         for env, a in zip(self.envs, actions):
             observation, reward, done, info = env.step(a)
-            if done:
+            if done['__all__']:
                 observation = env.reset()
             return_values.append((observation, reward, done, info))
         return tuple(return_values)
 
-    # Call this at the end of training:
-    def close(self):
-        for env in self.envs:
-            env.close()
-
 
 if __name__ == '__main__':
+    from dotdic import DotDic
     with open('config/PartialAccess.json', 'r') as f:
         config = json.loads(f.read())
-    env = MainEnv(config)
-    dones = {}
-    for i in range(1):
-        obs = env.reset()
-        dones['__all__'] = False
-        acc_r, t = 0, 0
+    config = DotDic(config)
+    config.training = False
+    env = RLlibEnv(config)
+    for _ in range(3):
+        obss = env.reset()
+        dones = {'__all__': False}
+        t = 0
         while not dones['__all__']:
             t += 1
-            # Random policy
-            actions = {scheduler: softmax(action_space.sample()) for scheduler, action_space in env.action_spaces.items()}
+            # Random polic
+            actions = {scheduler: action_space.sample() for scheduler, action_space in env.action_spaces.items()}
             obs, r, dones, info = env.step(actions)
-            for _, _r in r.items():
-                acc_r += _r
             print('timestep:', t)
-            print('state:', env.state())
-            print('obs:', obs[1])
-            print('rewards:', r)
-            print('dones:', dones)
-            # print('messages:', info)
+            print('obs:', obs.keys())
+            print('rewards:', r.keys())
+            print('dones:', dones.keys())
+            print('messages:', info.keys())
             print('_' * 80)
-
-        print('acc_rewwards:', acc_r)
-        print('acc_drop_pkgs:', env.acc_drop_pkgs)
-
+    # num_envs = config.bs
+    # envs = VectorEnv(MainEnv, num_envs, config)
+    # for i in range(1):
+    #     obss = envs.reset()
+    #     dones = ({'__all__': False} for _ in range(num_envs))
+    #     acc_r = [0 for _ in range(num_envs)]
+    #     t = 0
+    #     while not all(done['__all__'] for done in dones):
+    #         t += 1
+    #         # Random policy
+    #         actions = [{scheduler: softmax(action_space.sample()) for scheduler, action_space in envs.action_spaces.items()} for _ in range(num_envs)]
+    #         obs, r, dones, info = envs.step(actions)
+    #         for i, rr in enumerate(r):
+    #             for _, _r in rr.items():
+    #                 acc_r[i] += _r
+    #         print('timestep:', t)
+    #         print('state:', envs.state())
+    #         print('obs:', (o[0] for o in obs))
+    #         print('rewards:', r)
+    #         print('dones:', dones)
+    #         # print('messages:', info)
+    #         print('_' * 80)
+    #
+    #     print('acc_rewwards:', acc_r)
+    #     print('acc_drop_pkgs:', envs.acc_drop_pkgs)

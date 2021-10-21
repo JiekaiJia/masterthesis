@@ -13,21 +13,21 @@ class BasicScenario:
         self.conf = conf
 
         # Initialize schedulers.
-        self.schedulers = [Scheduler(i + 1) for i in range(conf['n_schedulers'])]
+        self.schedulers = [Scheduler(i + 1) for i in range(conf.n_schedulers)]
         for i, scheduler in enumerate(self.schedulers):
             scheduler.name = f'scheduler_{i + 1}'
-            scheduler.silent = conf['silent']
-            scheduler.c_noise = conf['c_noise']
+            scheduler.silent = conf.silent
+            scheduler.c_noise = conf.c_noise
 
         # Initialize servers.
-        self.servers = [Server(i + 1, conf['serving_rate'], conf['queue_max_len']) for i in range(conf['n_servers'])]
+        self.servers = [Server(i + 1, conf.serving_rate, conf.queue_max_len) for i in range(conf.n_servers)]
         for i, server in enumerate(self.servers):
             server.name = f'server_{i + 1}'
         # Initialize packages and drop_pkgs dict.
         self.reset()
 
     def reset(self):
-        self.packages = [CreatePackage(self.conf['n_packages'], self.conf['arrival_rate'], scheduler.name) for scheduler
+        self.packages = [CreatePackage(self.conf.n_packages, self.conf.arrival_rate, scheduler.name) for scheduler
                          in
                          self.schedulers]
         self.drop_pkgs = {scheduler.name: 0 for scheduler in self.schedulers}
@@ -63,9 +63,9 @@ class SimpleScenario(BasicScenario):
     
     def __init__(self, conf):
         super().__init__(conf)
-        self.dim_a = conf['n_servers'] + 1
+        self.dim_a = conf.n_servers + 1
         # Define communication action dimension.
-        self.dim_c = conf['msg_bits']
+        self.dim_c = conf.msg_bits
         for i, scheduler in enumerate(self.schedulers):
             scheduler.msg = [0]*self.dim_c
 
@@ -98,11 +98,13 @@ class PartialAccessScenario(BasicScenario):
 
     def __init__(self, conf):
         super().__init__(conf)
-        self.delay_t = conf['delay_time']
-        self.obs_servers = conf['obs_servers']
-        self.frequency = conf['delay_change_frequency']
+        self.delay_t = conf.delay_time
+        self.obs_servers = conf.obs_servers
+        self.frequency = conf.delay_change_frequency
         self.dim_a = self.obs_servers + 1
         # The servers that each scheduler can observe and access.
+        if conf.random_seed:
+            random.seed(conf.random_seed)
         idxs = [i for i in range(len(self.servers))]
         random.shuffle(idxs)
         for i, scheduler in enumerate(self.schedulers):
@@ -114,22 +116,24 @@ class PartialAccessScenario(BasicScenario):
         self.delay_t = value
 
     def observation(self, scheduler):
-        # 95% confidence interval.
-        eps = 1.65
+        # 50% confidence interval.
+        eps = 0.67
         # Get queue length of each server.
         queue_lens = []
+        real_queue_lens = []
         for server in scheduler.obs_servers:
             # If time step is smaller than delay time, then observe 0
             if len(server.history_len) <= self.delay_t:
                 queue_lens.append(0)
+                real_queue_lens.append(0)
             # If time step is larger than delay time, then observe the queue length that is 2 time step ago.
             else:
-                # if np.random.randn() < eps:
-                #     queue_lens.append(server.history_len[-1-self.delay_t])
-                # else:
-                #     queue_lens.append(0)
-                queue_lens.append(server.history_len[-1-self.delay_t])
-        return queue_lens
+                if np.random.randn() < eps:
+                    queue_lens.append(server.history_len[-1-self.delay_t])
+                else:
+                    queue_lens.append(0)
+                real_queue_lens.append(server.history_len[-1-self.delay_t])
+        return queue_lens, real_queue_lens
 
 
 class PartialcommScenario(PartialAccessScenario):

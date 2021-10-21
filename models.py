@@ -65,9 +65,13 @@ class MVAE(nn.Module):
         if self.training:
             std = logvar.mul(0.5).exp_()
             eps = std.data.new(std.size()).normal_()
-            return F.softmax(eps.mul(std).add_(mu), dim=1)
+            # return torch.clamp(eps.mul(std).add_(mu), 0)
+            # return F.softmax(eps.mul(std).add_(mu), dim=1)
+            return eps.mul(std).add_(mu)
         else:  # return mean during inference
-            return F.softmax(mu, dim=1)
+            # return torch.clamp(mu, 0)
+            # return F.softmax(mu, dim=1)
+            return mu
 
     def forward(self, p, obs):
         """Forward pass through the MVAE.
@@ -84,6 +88,9 @@ class MVAE(nn.Module):
         obs_recons = []
         # reparametrization trick to sample
         for i, (_mu, _logvar) in enumerate(zip(mu, logvar)):
+            if _mu is None:
+                obs_recons.append(None)
+                continue
             z = [self.reparametrize(__mu, __logvar) for __mu, __logvar in zip(_mu, _logvar)]
             obs_recon = []
             for j, _z in enumerate(z):
@@ -101,6 +108,10 @@ class MVAE(nn.Module):
         mus = []
         logvars = []
         for i, encoders in enumerate(self.belief_encoders):
+            if obs[i] is None:
+                mus.append(None)
+                logvars.append(None)
+                continue
             _mus = []
             _logvars = []
             _input = obs[i].long()
@@ -116,8 +127,14 @@ class MVAE(nn.Module):
         f_mu, f_logvar = [], []
         # Each scheduler has a communication group, in which the agents share the same partial access.
         for scheduler in self.schedulers:
+            # If the scheduler is done, then skip this scheduler.
+            if mus[_index_map[scheduler]] is None:
+                f_mu.append(None)
+                f_logvar.append(None)
+                continue
             comm_group = self.comm_group[scheduler]
             _f_mu, _f_logvar = [], []
+            # Each queue has a group of schedulers, which can access to it.
             for k, group in enumerate(comm_group):
                 mu, logvar = prior_expert((1, batch_size, self.n_latents), use_cuda=use_cuda)
                 mu = torch.cat((mu, mus[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
@@ -125,6 +142,8 @@ class MVAE(nn.Module):
                 if not scheduler.silent and p[scheduler.name] > 0.5:
                     server = scheduler.obs_servers[k]
                     for member in group:
+                        if mus[_index_map[member]] is None:
+                            continue
                         idx = member.obs_servers.index(server)
                         mu = torch.cat((mu, mus[_index_map[member]][idx].unsqueeze(0)), dim=0)
                         logvar = torch.cat((logvar, logvars[_index_map[member]][idx].unsqueeze(0)), dim=0)
@@ -135,6 +154,16 @@ class MVAE(nn.Module):
             f_mu.append(_f_mu)
             f_logvar.append(_f_logvar)
         return f_mu, f_logvar
+
+    def show_grad(self):
+        print('encoder')
+        for name, weight in self.belief_encoders[0][0].named_parameters():
+            if weight.requires_grad:
+                print(name, '_weight_grad', weight.grad.mean(), weight.grad.min(), weight.grad.max())
+        print('decoder')
+        for name, weight in self.belief_decoders[0][0].named_parameters():
+            if weight.requires_grad:
+                print(name, '_weight_grad', weight.grad.mean(), weight.grad.min(), weight.grad.max())
 
 
 class AgentEncoder(nn.Module):

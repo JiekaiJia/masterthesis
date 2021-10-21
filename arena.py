@@ -1,7 +1,7 @@
 """https://github.com/minqi/learning-to-communicate-pytorch"""
-
 import json
 
+import numpy as np
 from scipy.special import softmax
 from tensorboardX import SummaryWriter
 import torch
@@ -17,19 +17,21 @@ class Arena:
     def __init__(self, opt, env):
         self.opt = opt
         self.env = env
-        self.loss = []
+        self.buffer = []
+        self.buffer_size = opt.buffer_size
+        self.episode = DotDic({})
         self.writer = SummaryWriter()
+        self.n_models = opt.n_schedulers * opt.obs_servers
+        self.model = self.env.model
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = optim.Adam(env.model.parameters(), lr=opt.lr)
 
     def create_episode(self):
         opt = self.opt
-        episode = DotDic({})
-        episode.steps = torch.zeros(opt.bs).int()
-        episode.ended = torch.zeros(opt.bs).int()
-        episode.step_records = []
-
-        return episode
+        self.episode = DotDic({})
+        self.episode.steps = torch.zeros(opt.bs).int()
+        self.episode.ended = torch.zeros(opt.bs).int()
+        self.episode.step_records = []
 
     def create_step_record(self):
         opt = self.opt
@@ -40,17 +42,37 @@ class Arena:
         record.logvar = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)] for _ in range(n_schdulers)]
         record.obs = [torch.zeros(opt.bs, n_servers) for _ in range(n_schdulers)]
         record.recon_obs = [torch.zeros(opt.bs, n_servers, opt.queue_max_len+1) for _ in range(n_schdulers)]
+        
+        record.mu0 = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)] for _ in range(n_schdulers)]
+        record.logvar0 = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)] for _ in range(n_schdulers)]
+        record.recon_obs0 = [torch.zeros(opt.bs, n_servers, opt.queue_max_len+1) for _ in range(n_schdulers)]
 
         return record
 
     def train(self):
         opt = self.opt
+        best_loss = float('inf')
         for e in range(opt.nepisodes):
-            episode = self.run_episode()
-            self.learn_from_episode(episode)
-            self.writer.add_scalar('loss', self.loss[-1], global_step=e+1)
-            print(f'Train Episode: {e+1}/{opt.nepisodes} Loss: {self.loss[-1]:.2f}')
+            self.run_episode()
+            loss = self.learn_from_episode(self.episode)
+            # Save the model
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                self.save_model(e, loss, opt.check_path)
+                print('The model is improved ======> Model saved !!')
+
+            self.writer.add_scalar('loss', loss.item(), global_step=e+1)
+            print(f'Train Episode: {e+1}/{opt.nepisodes} Loss: {loss.item():.2f}')
+            # Delete the episode after training.
+            self.episode.clear()
         self.writer.close()
+
+    def test(self):
+        opt = self.opt
+        for e in range(opt.nepisodes):
+            self.run_episode()
+            # Delete the episode after training.
+            self.episode.clear()
 
     def run_episode(self):
         env = self.env
@@ -58,10 +80,10 @@ class Arena:
         obss = env.reset()
 
         step = 0
-        episode = self.create_episode()
+        self.create_episode()
         dones = {'__all__': False}
         while not dones['__all__']:
-            episode.step_records.append(self.create_step_record())
+            self.episode.step_records.append(self.create_step_record())
             # Random policy
             actions = {scheduler: softmax(action_space.sample()) for scheduler, action_space in env.action_spaces.items()}
 
@@ -69,26 +91,44 @@ class Arena:
 
             print('timestep:', step+1)
             # print('state:', env.state())
-            print('obs:', obss[0])
-            print('re_obs', obss[1])
-            print('re_obss', obss[4])
+            # print('obs:', obss[0])
+            # print('re_obs', obss[1])
+            # belief = {scheduler: torch.cat(obss[1][i], dim=0).cpu().numpy() for i, scheduler in enumerate(self.env.schedulers)}
+            # print({k: np.concatenate((v, np.array(obss[0][i]).reshape(5, 1)), axis=1)for i, (k, v) in enumerate(belief.items())})
+            # print('mu', obss[2][:3])
+            # print('logvar', obss[3][:3])
+            # print('re_obss', obss[4])
+            # print('mu0', obss[6])
+            # print('re_obss0', obss[8])
+            # print('real_obs', obss[9])
             # print('rewards:', r)
             # print('dones:', dones)
             # # print('messages:', info)
             print('_' * 80)
             for b in range(opt.bs):
                 for i in range(opt.n_schedulers):
-                    episode.step_records[step].obs[i][b, :] = obss[0][i]
+                    self.episode.step_records[step].obs[i][b, :] = obss[0][i]
                     for j in range(opt.obs_servers):
-                        episode.step_records[step].recon_obs[i][b, j, :] = obss[1][i][j]
-                        episode.step_records[step].mu[i][j][b, :] = obss[2][i][j]
-                        episode.step_records[step].logvar[i][j][b, :] = obss[3][i][j]
-                episode.steps[b] = step
+                        self.episode.step_records[step].recon_obs[i][b, j, :] = obss[1][i][j]
+                        self.episode.step_records[step].mu[i][j][b, :] = obss[2][i][j]
+                        self.episode.step_records[step].logvar[i][j][b, :] = obss[3][i][j]
+
+                        self.episode.step_records[step].recon_obs0[i][b, j, :] = obss[5][i][j]
+                        self.episode.step_records[step].mu0[i][j][b, :] = obss[6][i][j]
+                        self.episode.step_records[step].logvar0[i][j][b, :] = obss[7][i][j]
+                self.episode.steps[b] = step
 
             # Update step
             step += 1
 
-        return episode
+    def learn_from_episode(self, episode):
+        self.optimizer.zero_grad()
+        loss = self.episode_loss(episode)
+        loss.backward()
+        # self.write_grad()
+        self.optimizer.step()
+
+        return loss
 
     def episode_loss(self, episode):
         total_loss = 0
@@ -97,9 +137,13 @@ class Arena:
                                          episode.step_records[step].obs,
                                          episode.step_records[step].mu,
                                          episode.step_records[step].logvar)
-        return total_loss
+            total_loss += self.elbo_loss(episode.step_records[step].recon_obs0,
+                                         episode.step_records[step].obs,
+                                         episode.step_records[step].mu0,
+                                         episode.step_records[step].logvar0)
+        return total_loss / self.n_models
 
-    def elbo_loss(self, recon, data, mu, logvar, lambda_attrs=1.0, annealing_factor=1.):
+    def elbo_loss(self, recon, data, mu, logvar, lambda_attrs=1.0, annealing_factor=0.05):
         """Compute the ELBO for an arbitrary number of data modalities.
         @param recon: list of torch.Tensors/Variables
                       Contains one for each modality.
@@ -121,28 +165,36 @@ class Arena:
 
         BCE = 0  # reconstruction cost
         KLD = 0
+        # n agents
         for ix in range(n_modalities):
+            # for each q state has an inference network.
             for j in range(len(mu[ix])):
                 BCE += lambda_attrs * self.criterion(recon[ix][:, j, :], data[ix][:, j].long())
-                KLD += -0.5 * torch.sum(1 + logvar[ix][j] - mu[ix][j].pow(2) - logvar[ix][j].exp(), dim=1)
+                # KLD += -0.5 * torch.sum(1 + logvar[ix][j] - mu[ix][j].pow(2) - logvar[ix][j].exp(), dim=1)
         ELBO = torch.mean(BCE + annealing_factor * KLD)
         return ELBO
 
-    def learn_from_episode(self, episode):
-        self.optimizer.zero_grad()
-        loss = self.episode_loss(episode)
-        self.write_loss(loss)
-        loss.backward()
-        self.optimizer.step()
+    def write_grad(self):
+        self.model.show_grad()
 
-    def write_loss(self, loss):
-        self.loss.append(loss)
+    def save_model(self, episode, loss, checkpoint_path):
+        try:
+            torch.save({'epoch': episode + 1, 'state_dict': self.model.state_dict(), 'best_loss': loss.item(),
+                        'optimizer': self.optimizer.state_dict()}, checkpoint_path + '/' + 'belief_encoder' + '.pth')
+        except FileNotFoundError:
+            import os
+            os.mkdir(checkpoint_path)
+            torch.save({'epoch': episode + 1, 'state_dict': self.model.state_dict(), 'best_loss': loss.item(),
+                        'optimizer': self.optimizer.state_dict()},
+                       checkpoint_path + '/' + 'belief_encoder' + '.pth')
 
 
 if __name__ == '__main__':
     with open('config/PartialAccess.json', 'r') as f:
         config = DotDic(json.loads(f.read()))
+    config.training = False
     env = MainEnv(config)
     arena = Arena(config, env)
-    arena.train()
+    arena.test()
+    # arena.train()
 
