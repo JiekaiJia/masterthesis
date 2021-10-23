@@ -53,7 +53,11 @@ class Arena:
         opt = self.opt
         best_loss = float('inf')
         for e in range(opt.nepisodes):
-            self.run_episode()
+            if e % 10 == 0:
+                show = True
+            else:
+                show = False
+            self.run_episode(show)
             loss = self.learn_from_episode(self.episode)
             # Save the model
             if loss.item() < best_loss:
@@ -69,12 +73,12 @@ class Arena:
 
     def test(self):
         opt = self.opt
-        for e in range(opt.nepisodes):
-            self.run_episode()
+        for e in range(1):
+            self.run_episode(True)
             # Delete the episode after training.
             self.episode.clear()
 
-    def run_episode(self):
+    def run_episode(self, show):
         env = self.env
         opt = self.opt
         obss = env.reset()
@@ -85,26 +89,28 @@ class Arena:
         while not dones['__all__']:
             self.episode.step_records.append(self.create_step_record())
             # Random policy
-            actions = {scheduler: softmax(action_space.sample()) for scheduler, action_space in env.action_spaces.items()}
+            actions = {scheduler: action_space.sample() for scheduler, action_space in env.action_spaces.items()}
 
             obss, r, dones, info = env.step(actions)
-
-            print('timestep:', step+1)
-            # print('state:', env.state())
-            # print('obs:', obss[0])
-            # print('re_obs', obss[1])
-            # belief = {scheduler: torch.cat(obss[1][i], dim=0).cpu().numpy() for i, scheduler in enumerate(self.env.schedulers)}
-            # print({k: np.concatenate((v, np.array(obss[0][i]).reshape(5, 1)), axis=1)for i, (k, v) in enumerate(belief.items())})
-            # print('mu', obss[2][:3])
-            # print('logvar', obss[3][:3])
-            # print('re_obss', obss[4])
-            # print('mu0', obss[6])
-            # print('re_obss0', obss[8])
-            # print('real_obs', obss[9])
-            # print('rewards:', r)
-            # print('dones:', dones)
-            # # print('messages:', info)
-            print('_' * 80)
+            if show:
+                print('timestep:', step+1)
+                # print('state:', env.state())
+                print('obs:', obss[0])
+                # print('re_obs', obss[1])
+                # belief = {scheduler: torch.cat(obss[1][i], dim=0).cpu().numpy() for i, scheduler in enumerate(self.env.schedulers)}
+                # print({k: np.concatenate((v, np.array(obss[0][i]).reshape(5, 1)), axis=1)for i, (k, v) in enumerate(belief.items())})
+                # print('mu', obss[2])
+                # print('logvar', obss[3])
+                # print('re_obss', obss[4])
+                # print('re_obs0', obss[5])
+                # print('mu0', obss[6])
+                # print('logvar0', obss[7])
+                # print('re_obss0', obss[8])
+                print('real_obs', obss[9])
+                # print('rewards:', r)
+                # print('dones:', dones)
+                # # print('messages:', info)
+                print('_' * 80)
             for b in range(opt.bs):
                 for i in range(opt.n_schedulers):
                     self.episode.step_records[step].obs[i][b, :] = obss[0][i]
@@ -180,13 +186,13 @@ class Arena:
     def save_model(self, episode, loss, checkpoint_path):
         try:
             torch.save({'epoch': episode + 1, 'state_dict': self.model.state_dict(), 'best_loss': loss.item(),
-                        'optimizer': self.optimizer.state_dict()}, checkpoint_path + '/' + 'belief_encoder' + '.pth')
+                        'optimizer': self.optimizer.state_dict()}, checkpoint_path + f'/belief_encoder{self.opt.n_schedulers}.pth')
         except FileNotFoundError:
             import os
             os.mkdir(checkpoint_path)
             torch.save({'epoch': episode + 1, 'state_dict': self.model.state_dict(), 'best_loss': loss.item(),
                         'optimizer': self.optimizer.state_dict()},
-                       checkpoint_path + '/' + 'belief_encoder' + '.pth')
+                       checkpoint_path + f'/belief_encoder{self.opt.n_schedulers}.pth')
 
 
 if __name__ == '__main__':

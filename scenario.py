@@ -98,7 +98,7 @@ class PartialAccessScenario(BasicScenario):
 
     def __init__(self, conf):
         super().__init__(conf)
-        self.delay_t = conf.delay_time
+        self.delay_t = np.random.randint(1, high=4, size=self.conf.n_schedulers)
         self.obs_servers = conf.obs_servers
         self.frequency = conf.delay_change_frequency
         self.dim_a = self.obs_servers + 1
@@ -107,32 +107,50 @@ class PartialAccessScenario(BasicScenario):
             random.seed(conf.random_seed)
         idxs = [i for i in range(len(self.servers))]
         random.shuffle(idxs)
+        # print(idxs)
         for i, scheduler in enumerate(self.schedulers):
             for j in range(self.obs_servers):
                 scheduler.obs_servers.append(self.servers[idxs[(i+j) % len(idxs)]])
                 self.servers[idxs[(i + j) % len(idxs)]].access_schedulers.append(scheduler)
 
-    def set_delay_t(self, value):
-        self.delay_t = value
+        # Setting a scheduler for each server, which can get real-time observations.
+        self.real_obs_s = {}
+        tmp = {}
+        for server in self.servers:
+            self.real_obs_s[server] = random.choice(server.access_schedulers)
+            tmp[server.name] = self.real_obs_s[server].name
+
+        # print(tmp)
+        # print(self.delay_t)
+
+    def reset_delay_t(self):
+        self.delay_t = np.random.randint(1, high=4, size=self.conf.n_schedulers)
+        print(self.delay_t)
 
     def observation(self, scheduler):
         # 50% confidence interval.
-        eps = 0.67
+        # eps = 0.67
         # Get queue length of each server.
+        # Delayed time queue length
         queue_lens = []
+        delay_t = self.delay_t[scheduler.id - 1]
+        # Real-time queue length
         real_queue_lens = []
         for server in scheduler.obs_servers:
-            # If time step is smaller than delay time, then observe 0
-            if len(server.history_len) <= self.delay_t:
-                queue_lens.append(0)
-                real_queue_lens.append(0)
-            # If time step is larger than delay time, then observe the queue length that is 2 time step ago.
+            if self.real_obs_s[server] == scheduler:
+                queue_lens.append(server.history_len[-1])
             else:
-                if np.random.randn() < eps:
-                    queue_lens.append(server.history_len[-1-self.delay_t])
-                else:
+                # If time step is smaller than delay time, then observe 0
+                if len(server.history_len) <= delay_t:
                     queue_lens.append(0)
-                real_queue_lens.append(server.history_len[-1-self.delay_t])
+                # If time step is larger than delay time, then observe the queue length that is 2 time step ago.
+                else:
+                    # if np.random.randn() < eps:
+                    #     queue_lens.append(server.history_len[-1-self.delay_t])
+                    # else:
+                    #     queue_lens.append(0)
+                    queue_lens.append(server.history_len[-1-delay_t])
+            real_queue_lens.append(server.history_len[-1])
         return queue_lens, real_queue_lens
 
 

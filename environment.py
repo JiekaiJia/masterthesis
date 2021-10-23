@@ -244,8 +244,9 @@ class QueueingNetwork2(BasicNetwork):
         for server in self.scenario.servers:
             server.history_len.append(len(server))
         # Change the delay time every n steps.
+        # todo: Can delay time changing be useful?
         if self.steps % self.frequency == 0:
-            self.scenario.set_delay_t(np.random.randint(0, 6))
+            self.scenario.reset_delay_t()
         self.steps += 1
         return self.observe(), self.rewards, self.dones, self.infos
 
@@ -275,12 +276,10 @@ class QueueingNetwork3(QueueingNetwork2):
 
         if not self.training:
             self.model.load_state_dict(
-                torch.load(self.scenario.conf.check_path + '/' + 'belief_encoder50.pth')['state_dict']
+                torch.load(self.scenario.conf.check_path + f'/belief_encoder{self.num_schedulers}.pth')['state_dict']
             )
 
     def step(self, actions):
-        # todo: if a scheduler has seen q1,q2,q3 during training,
-        # todo: then what if it sees q4,q5,q6 in the future, the trained model can be used as normal?
         observations, rewards, dones, infos = super().step(actions)
         # Transform observations to NxL tensors, where N is the number of schedulers
         # and L is the length of observations.
@@ -329,7 +328,7 @@ class QueueingNetwork4(QueueingNetwork3):
         return super().step(actions)
 
 
-class RawEnv(QueueingNetwork4):
+class RawEnv(QueueingNetwork3):
     def __init__(self, conf):
         scenario = PartialcommScenario(conf)
         super().__init__(scenario)
@@ -362,7 +361,7 @@ class RLlibEnv(MultiAgentEnv):
         obss, rews, dones, infos = self.raw_env.step(actions)
         self.schedulers = self.raw_env.schedulers
         belief = {scheduler: torch.cat(obss[1][self.raw_env._index_map[scheduler]], dim=0).cpu().numpy() for scheduler in self.schedulers}
-        new_obs = {k: np.concatenate((v, np.array(obss[0][self.raw_env._index_map[k]]).reshape(5, 1)), axis=1) for k, v in belief.items()}
+        new_obs = {k: np.concatenate((v, np.array(obss[0][self.raw_env._index_map[k]]).reshape(self.raw_env.scenario.conf.obs_servers, 1)), axis=1) for k, v in belief.items()}
         dones_ = {k: dones[k] for k in self.schedulers}
         dones_['__all__'] = all(dones.values())
         infos = {k: {'done': dones[k]} for k in self.schedulers}

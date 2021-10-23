@@ -32,8 +32,8 @@ if __name__ == '__main__':
     # Use GPUs if `RLLIB_NUM_GPUS` env var set to > 0.
     config['num_gpus'] = int(os.environ.get('RLLIB_NUM_GPUS', '0'))
     # Number of rollout worker actors to create for parallel sampling.
-    config['num_workers'] = 1
-    config['num_envs_per_worker'] = 1
+    config['num_workers'] = 4  # euler 20
+    # config['num_envs_per_worker'] = 1
 
     # === Settings for the Trainer process ===
     # Whether layers should be shared for the value function.
@@ -54,7 +54,7 @@ if __name__ == '__main__':
 
     # # === Debug Settings ===
     # # Periodically print out summaries of relevant internal dataflow(DEBUG, INFO, WARN, or ERROR.)
-    config['log_level'] = 'DEBUG'
+    config['log_level'] = 'INFO'
     config['no_done_at_end'] = True
 
     # === Settings for Multi-Agent Environments ===
