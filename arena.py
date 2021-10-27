@@ -1,15 +1,13 @@
 """https://github.com/minqi/learning-to-communicate-pytorch"""
 import json
 
-import numpy as np
-from scipy.special import softmax
+import gym
 from tensorboardX import SummaryWriter
 import torch
 import torch.optim as optim
-from torch.nn import functional as F
 
 from dotdic import DotDic
-from environment import MainEnv
+import custom_env
 
 
 class Arena:
@@ -39,12 +37,14 @@ class Arena:
         n_schdulers = opt.n_schedulers
         record = DotDic({})
         record.mu = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)] for _ in range(n_schdulers)]
-        record.logvar = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)] for _ in range(n_schdulers)]
+        record.logvar = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)]
+                         for _ in range(n_schdulers)]
         record.obs = [torch.zeros(opt.bs, n_servers) for _ in range(n_schdulers)]
         record.recon_obs = [torch.zeros(opt.bs, n_servers, opt.queue_max_len+1) for _ in range(n_schdulers)]
         
         record.mu0 = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)] for _ in range(n_schdulers)]
-        record.logvar0 = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)] for _ in range(n_schdulers)]
+        record.logvar0 = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)]
+                          for _ in range(n_schdulers)]
         record.recon_obs0 = [torch.zeros(opt.bs, n_servers, opt.queue_max_len+1) for _ in range(n_schdulers)]
 
         return record
@@ -95,7 +95,7 @@ class Arena:
             if show:
                 print('timestep:', step+1)
                 # print('state:', env.state())
-                print('obs:', obss[0])
+                # print('obs:', obss[0])
                 # print('re_obs', obss[1])
                 # belief = {scheduler: torch.cat(obss[1][i], dim=0).cpu().numpy() for i, scheduler in enumerate(self.env.schedulers)}
                 # print({k: np.concatenate((v, np.array(obss[0][i]).reshape(5, 1)), axis=1)for i, (k, v) in enumerate(belief.items())})
@@ -106,7 +106,7 @@ class Arena:
                 # print('mu0', obss[6])
                 # print('logvar0', obss[7])
                 # print('re_obss0', obss[8])
-                print('real_obs', obss[9])
+                # print('real_obs', obss[9])
                 # print('rewards:', r)
                 # print('dones:', dones)
                 # # print('messages:', info)
@@ -186,7 +186,8 @@ class Arena:
     def save_model(self, episode, loss, checkpoint_path):
         try:
             torch.save({'epoch': episode + 1, 'state_dict': self.model.state_dict(), 'best_loss': loss.item(),
-                        'optimizer': self.optimizer.state_dict()}, checkpoint_path + f'/belief_encoder{self.opt.n_schedulers}.pth')
+                        'optimizer': self.optimizer.state_dict()}, checkpoint_path +
+                       f'/belief_encoder{self.opt.n_schedulers}.pth')
         except FileNotFoundError:
             import os
             os.mkdir(checkpoint_path)
@@ -199,7 +200,9 @@ if __name__ == '__main__':
     with open('config/PartialAccess.json', 'r') as f:
         config = DotDic(json.loads(f.read()))
     config.training = False
-    env = MainEnv(config)
+    config.training = False
+    config.has_encoder = True
+    env = gym.make(id="main_network-v0", conf=config)
     arena = Arena(config, env)
     arena.test()
     # arena.train()

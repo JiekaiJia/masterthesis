@@ -1,11 +1,12 @@
 gym==0.21.0
 numpy==1.19.5
-ray[default]
+ray[default]~=1.7.0
 ray[rllib]
 ray[tune]
+scipy~=1.7.1
 tensorflow==2.6.0
-torch==1.9.1
+torch~=1.9.1
 torchsummary==1.5.1
-torchvision==0.10.1
+torchvision==0.10.0
 tqdm==4.62.3
-
+tensorboardX~=2.4

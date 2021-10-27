@@ -5,9 +5,9 @@
   "serving_rate": 10,
   "queue_max_len": 5,
   "n_packages": 500,
-  "silent": false,
+  "silent": true,
   "c_noise": null,
-  "nepisodes": 1000,
+  "nepisodes": 350,
   "obs_servers": 3,
   "buffer_size": 5000,
   "random_seed": 2021,
@@ -16,5 +16,6 @@
   "delay_change_frequency": 10,
   "env_name": "simple_queueing_v2",
   "check_path": "./model_states",
-  "training": true
+  "training": true,
+  "has_encoder": false
 }

@@ -1,6 +1,5 @@
 from copy import deepcopy
 import json
-import os
 
 import ray
 from ray.rllib.agents.registry import get_trainer_class
@@ -30,9 +29,11 @@ if __name__ == '__main__':
 
     # === Settings for Rollout Worker processes ===
     # Use GPUs if `RLLIB_NUM_GPUS` env var set to > 0.
-    config['num_gpus'] = int(os.environ.get('RLLIB_NUM_GPUS', '0'))
+    # config['num_gpus'] = 0.0001
+    # int(os.environ.get('RLLIB_NUM_GPUS', '0'))
+    # config['num_gpus_per_worker'] = (1-0.0001)/3
     # Number of rollout worker actors to create for parallel sampling.
-    config['num_workers'] = 4  # euler 20
+    config['num_workers'] = 3  # euler 20
     # config['num_envs_per_worker'] = 1
 
     # === Settings for the Trainer process ===
@@ -40,11 +41,11 @@ if __name__ == '__main__':
     config['model'] = {
         'fcnet_hiddens': [128],
         'fcnet_activation': 'relu',
-        'vf_share_layers': False,
-        'use_lstm': True,
-        'max_seq_len': 40,
-        'lstm_use_prev_action': True,
-        'lstm_use_prev_reward': True,
+        # 'vf_share_layers': False,
+        # 'use_lstm': True,
+        # 'max_seq_len': 40,
+        # 'lstm_use_prev_action': True,
+        # 'lstm_use_prev_reward': True,
     }
 
     # === Environment Settings ===
@@ -54,7 +55,7 @@ if __name__ == '__main__':
 
     # # === Debug Settings ===
     # # Periodically print out summaries of relevant internal dataflow(DEBUG, INFO, WARN, or ERROR.)
-    config['log_level'] = 'INFO'
+    config['log_level'] = 'WARN'
     config['no_done_at_end'] = True
 
     # === Settings for Multi-Agent Environments ===
@@ -72,13 +73,13 @@ if __name__ == '__main__':
 
     # Initialize ray and trainer object
     ray.init(
-        # ignore_reinit_error=True,
+        ignore_reinit_error=True,
         # log_to_driver=False
     )
 
     # Stop criteria
     stop = {
-        "training_iteration": 3000,
+        "training_iteration": 2,
     }
 
     # Train
@@ -87,13 +88,8 @@ if __name__ == '__main__':
         stop=stop,
         config=config,
         checkpoint_at_end=True,
-        local_dir='./ray_results'
-    )
-
-    # Get the tuple of checkpoint_path and metric
-    checkpoints = results.get_trial_checkpoints_paths(
-        trial=results.get_best_trial("episode_reward_mean", mode="max"),
-        metric="episode_reward_mean"
+        local_dir='./ray_results',
+        checkpoint_freq=100
     )
 
     ray.shutdown()
