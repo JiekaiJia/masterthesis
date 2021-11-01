@@ -1,20 +1,15 @@
 from copy import deepcopy
-import json
 
-import ray
 from ray.rllib.agents.registry import get_trainer_class
-from ray import tune
 from ray.tune.registry import register_env
+import torch
 
+from custom_env.environment import RLlibEnv
 from dotdic import DotDic
-from environment import RLlibEnv
 
 
-if __name__ == '__main__':
-    with open('./config/PartialAccess.json', 'r') as f:
-        conf = json.loads(f.read())
-
-    conf['training'] = False
+def set_config(conf):
+    conf['belief_training'] = False
     # Create test environment.
     test_env = RLlibEnv(DotDic(conf))
     # Register env
@@ -22,8 +17,7 @@ if __name__ == '__main__':
     register_env(env_name, lambda _: RLlibEnv(DotDic(conf)))
 
     # The used algorithm
-    alg_name = 'PPO'
-    # alg_name = 'DDPG'
+    alg_name = conf['alg_name']
     # Gets default training configuration.
     config = deepcopy(get_trainer_class(alg_name)._default_config)
 
@@ -70,26 +64,59 @@ if __name__ == '__main__':
         # Function mapping agent ids to policy ids.
         'policy_mapping_fn': lambda agent_id: 'shared',
     }
+    return config
 
+
+if __name__ == '__main__':
+    import argparse
+    import json
+
+    import ray
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('model_name', type=str, default=None,
+                        help="gives the belief model's name [default: None]")
+    parser.add_argument('--silent', action='store_true', default=False,
+                        help='defines if scheduler can communicate [default: False]')
+    parser.add_argument('--use_belief', action='store_true', default=False,
+                        help='encodes observations to belief [default: False]')
+    parser.add_argument('--cuda', action='store_true', default=False,
+                        help='enables CUDA training [default: False]')
+    args = parser.parse_args()
+    args.cuda = args.cuda and torch.cuda.is_available()
+
+    with open('./config/PartialAccess.json', 'r') as f:
+        conf = json.loads(f.read())
+    
+    conf['use_belief'] = args.use_belief
+    conf['silent'] = args.silent
+    if args.use_belief:
+        assert args.model_name is not None, 'If use belief model, the model name must be given.'
+        conf['model_name'] = args.model_name
+  
+    config = set_config(conf)
     # Initialize ray and trainer object
     ray.init(
         ignore_reinit_error=True,
+        local_mode=True,
         # log_to_driver=False
     )
 
     # Stop criteria
     stop = {
-        "training_iteration": 2,
+        "training_iteration": conf['training_iteration'],
     }
-
+    
+    # if conf['restore_from_previous_model']:
     # Train
-    results = tune.run(
-        alg_name,
+    results = ray.tune.run(
+        conf['alg_name'],
         stop=stop,
         config=config,
         checkpoint_at_end=True,
-        local_dir='./ray_results',
-        checkpoint_freq=100
+        local_dir=conf['local_dir'],
+        checkpoint_freq=conf['checkpoint_freq'],
+        restore='/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_c57d5_00000_0_2021-10-31_13-09-25/checkpoint_000050/checkpoint-50'
     )
 
     ray.shutdown()

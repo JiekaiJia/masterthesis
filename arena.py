@@ -53,20 +53,29 @@ class Arena:
         opt = self.opt
         best_loss = float('inf')
         for e in range(opt.nepisodes):
-            if e % 10 == 0:
+            if e % 100 == 0:
                 show = True
             else:
                 show = False
             self.run_episode(show)
-            loss = self.learn_from_episode(self.episode)
+
+            if e < opt.annealing_episodes:
+                # compute the KL annealing factor for the current episode in the current epoch
+                annealing_factor = (float(e) / float(opt.annealing_episodes))
+            else:
+                # by default the KL annealing factor is unity
+                annealing_factor = 1.0
+
+            loss = self.learn_from_episode(self.episode, annealing_factor)
+
+            self.writer.add_scalar('loss', loss.item(), global_step=e+1)
+            print('-'*80)
+            print(f'Training Episode: {e+1}/{opt.nepisodes} Loss: {loss.item():.2f}')
             # Save the model
-            if loss.item() < best_loss:
+            if e >= opt.annealing_episodes and loss.item() < best_loss:
                 best_loss = loss.item()
                 self.save_model(e, loss, opt.check_path)
                 print('The model is improved ======> Model saved !!')
-
-            self.writer.add_scalar('loss', loss.item(), global_step=e+1)
-            print(f'Train Episode: {e+1}/{opt.nepisodes} Loss: {loss.item():.2f}')
             # Delete the episode after training.
             self.episode.clear()
         self.writer.close()
@@ -95,18 +104,18 @@ class Arena:
             if show:
                 print('timestep:', step+1)
                 # print('state:', env.state())
-                # print('obs:', obss[0])
+                print('obs:', obss[0])
                 # print('re_obs', obss[1])
                 # belief = {scheduler: torch.cat(obss[1][i], dim=0).cpu().numpy() for i, scheduler in enumerate(self.env.schedulers)}
                 # print({k: np.concatenate((v, np.array(obss[0][i]).reshape(5, 1)), axis=1)for i, (k, v) in enumerate(belief.items())})
                 # print('mu', obss[2])
                 # print('logvar', obss[3])
-                # print('re_obss', obss[4])
+                print('re_obss', obss[4])
                 # print('re_obs0', obss[5])
                 # print('mu0', obss[6])
                 # print('logvar0', obss[7])
-                # print('re_obss0', obss[8])
-                # print('real_obs', obss[9])
+                print('re_obss0', obss[8])
+                print('real_obs', obss[9])
                 # print('rewards:', r)
                 # print('dones:', dones)
                 # # print('messages:', info)
@@ -127,29 +136,31 @@ class Arena:
             # Update step
             step += 1
 
-    def learn_from_episode(self, episode):
+    def learn_from_episode(self, episode, annealing_factor):
         self.optimizer.zero_grad()
-        loss = self.episode_loss(episode)
+        loss = self.episode_loss(episode, annealing_factor)
         loss.backward()
         # self.write_grad()
         self.optimizer.step()
 
         return loss
 
-    def episode_loss(self, episode):
+    def episode_loss(self, episode, annealing_factor):
         total_loss = 0
         for step in range(episode.steps):
             total_loss += self.elbo_loss(episode.step_records[step].recon_obs,
                                          episode.step_records[step].obs,
                                          episode.step_records[step].mu,
-                                         episode.step_records[step].logvar)
+                                         episode.step_records[step].logvar,
+                                         annealing_factor=annealing_factor)
             total_loss += self.elbo_loss(episode.step_records[step].recon_obs0,
                                          episode.step_records[step].obs,
                                          episode.step_records[step].mu0,
-                                         episode.step_records[step].logvar0)
+                                         episode.step_records[step].logvar0,
+                                         annealing_factor=annealing_factor)
         return total_loss / self.n_models
 
-    def elbo_loss(self, recon, data, mu, logvar, lambda_attrs=1.0, annealing_factor=0.05):
+    def elbo_loss(self, recon, data, mu, logvar, lambda_attrs=1.0, annealing_factor=1):
         """Compute the ELBO for an arbitrary number of data modalities.
         @param recon: list of torch.Tensors/Variables
                       Contains one for each modality.
@@ -176,8 +187,10 @@ class Arena:
             # for each q state has an inference network.
             for j in range(len(mu[ix])):
                 BCE += lambda_attrs * self.criterion(recon[ix][:, j, :], data[ix][:, j].long())
-                # KLD += -0.5 * torch.sum(1 + logvar[ix][j] - mu[ix][j].pow(2) - logvar[ix][j].exp(), dim=1)
-        ELBO = torch.mean(BCE + annealing_factor * KLD)
+                # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
+                # https://arxiv.org/abs/1312.6114
+                KLD += -0.5 * torch.sum(1 + logvar[ix][j] - mu[ix][j].pow(2) - logvar[ix][j].exp(), dim=1)
+        ELBO = torch.mean(BCE + annealing_factor * KLD/self.opt.obs_servers)
         return ELBO
 
     def write_grad(self):
@@ -187,23 +200,22 @@ class Arena:
         try:
             torch.save({'epoch': episode + 1, 'state_dict': self.model.state_dict(), 'best_loss': loss.item(),
                         'optimizer': self.optimizer.state_dict()}, checkpoint_path +
-                       f'/belief_encoder{self.opt.n_schedulers}.pth')
+                       f'/belief_encoder{self.opt.n_schedulers}_{episode + 1}_{loss.item():.2f}.pth')
         except FileNotFoundError:
             import os
             os.mkdir(checkpoint_path)
             torch.save({'epoch': episode + 1, 'state_dict': self.model.state_dict(), 'best_loss': loss.item(),
                         'optimizer': self.optimizer.state_dict()},
-                       checkpoint_path + f'/belief_encoder{self.opt.n_schedulers}.pth')
+                       checkpoint_path + f'/belief_encoder{self.opt.n_schedulers}_{episode + 1}_{loss.item():.2f}.pth')
 
 
 if __name__ == '__main__':
     with open('config/PartialAccess.json', 'r') as f:
         config = DotDic(json.loads(f.read()))
-    config.training = False
-    config.training = False
+    config.belief_training = True
     config.has_encoder = True
     env = gym.make(id="main_network-v0", conf=config)
     arena = Arena(config, env)
-    arena.test()
-    # arena.train()
+    # arena.test()
+    arena.train()
 

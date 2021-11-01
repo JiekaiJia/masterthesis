@@ -1,16 +1,16 @@
 import copy
-import json
+import logging
 
 import gym
 import torch
-from gym import spaces
 import numpy as np
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from scipy.special import softmax
 
-from dotdic import DotDic
 from models import MVAE
 from scenario import PartialcommScenario
+
+logger = logging.getLogger(__name__)
 
 
 class BasicNetwork(gym.Env):
@@ -37,7 +37,7 @@ class BasicNetwork(gym.Env):
         self.scenario.reset()
 
     def _execute_step(self):
-        # Collect all schedulers' sending packages with the order of time
+        # Collect all schedulers' sending packages in order of time
         transmit_q = []
         for name in self.schedulers:
             scheduler = self.scenario.schedulers[self.index_map[name]]
@@ -155,9 +155,9 @@ class QueueingNetwork1(BasicNetwork):
                 action_dim *= self.scenario.dim_c
 
             obs_dim = len(self.scenario.observation(scheduler)[0])
-            self.action_spaces[scheduler.name] = spaces.Box(low=0, high=1, shape=(action_dim,), dtype=np.float32)
+            self.action_spaces[scheduler.name] = gym.spaces.Box(low=0, high=1, shape=(action_dim,), dtype=np.float32)
             # observe its own length.
-            self.observation_spaces[scheduler.name] = spaces.Box(
+            self.observation_spaces[scheduler.name] = gym.spaces.Box(
                 low=0, high=max_q_len, shape=(obs_dim,), dtype=np.int32)
 
     def reset(self):
@@ -219,9 +219,10 @@ class QueueingNetwork2(BasicNetwork):
 
             obs_dim = len(self.scenario.observation(scheduler)[0])
             # Action space is the action distribution + communication probability.
-            self.action_spaces[scheduler.name] = spaces.Box(low=0, high=1, shape=(action_dim+1,), dtype=np.float32)
+            # todo: implement silent action spaces
+            self.action_spaces[scheduler.name] = gym.spaces.Box(low=0, high=1, shape=(action_dim+1,), dtype=np.float32)
             # observe queue's length.
-            self.observation_spaces[scheduler.name] = spaces.Box(
+            self.observation_spaces[scheduler.name] = gym.spaces.Box(
                 low=0, high=self.max_q_len, shape=(obs_dim,), dtype=np.int32)
 
     def reset(self):
@@ -237,7 +238,10 @@ class QueueingNetwork2(BasicNetwork):
             scheduler.action.a = softmax(self.current_actions[name])
 
     def step(self, actions):
+        # Make sure action dimension to be correct.
+        assert len(actions[self.schedulers[0]]) == self.action_spaces[self.schedulers[0]].shape[0], 'Wrong action dimension!!'
         # Set the current action distribution and communication probability.
+        # todo: implement silent action spaces
         for scheduler, action in actions.items():
             self.current_actions[scheduler] = action[:-1]
             self.p[scheduler] = action[-1]
@@ -260,14 +264,15 @@ class QueueingNetwork3(QueueingNetwork2):
     as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
     def __init__(self, scenario):
         super().__init__(scenario)
-        self.training = scenario.conf.training
+        self.training = scenario.conf.belief_training
         self.bs = scenario.conf.bs
+        self.model_name = scenario.conf.model_name
 
         # set observation spaces.
         if not scenario.conf.silent:
             for scheduler in self.scenario.schedulers:
                 # Belief as observation, the scheduler thinks how many packages are in the queue.
-                self.observation_spaces[scheduler.name] = spaces.Box(
+                self.observation_spaces[scheduler.name] = gym.spaces.Box(
                     low=float('-inf'), high=float('inf'),
                     shape=(scenario.obs_servers, self.max_q_len + 1 + 1), dtype=np.float32)
 
@@ -282,10 +287,37 @@ class QueueingNetwork3(QueueingNetwork2):
 
         if not self.training:
             try:
-                self.model.load_state_dict(torch.load(scenario.conf.check_path +
-                                                      f'/belief_encoder{self.num_schedulers}.pth')['state_dict'])
+                self.model.load_state_dict(torch.load(scenario.conf.check_path + '/' + self.model_name + '.pth')['state_dict'])
             except FileNotFoundError:
                 print('No existed trained model, using initial parameters.')
+
+
+class QueueingNetwork4(QueueingNetwork3):
+    """This network is based on the configurations of Queueingnetwork2, and addresses beliefs over queue state
+    as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
+    def __init__(self, scenario):
+        super().__init__(scenario)
+
+    def step(self, actions):
+        observations, rewards, dones, infos = super().step(actions)
+        # Transform observations to NxL tensors, where N is the number of schedulers
+        # and L is the length of observations.
+        obs = [None] * self.num_schedulers
+        for k, v in observations.items():
+            obs[self.index_map[k]] = torch.from_numpy(np.array(v[0]))
+
+        self.model.eval()
+        with torch.no_grad():
+            recon_obs, mu, logvar = self.model(self.p, obs)
+
+        return (obs, recon_obs), self.rewards, self.dones, self.infos
+
+
+class QueueingNetwork5(QueueingNetwork3):
+    """This network is based on the configurations of Queueingnetwork2, and addresses beliefs over queue state
+    as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
+    def __init__(self, scenario):
+        super().__init__(scenario)
 
     def step(self, actions):
         observations, rewards, dones, infos = super().step(actions)
@@ -300,7 +332,9 @@ class QueueingNetwork3(QueueingNetwork2):
         if self.training:
             self.model.train()
             self.p = {scheduler: 1 for scheduler in self.schedulers}
+            # Joint distribution
             recon_obs, mu, logvar = self.model(self.p, obs)
+            # Single distribution
             recon_obs0, mu0, logvar0 = self.model({scheduler: 0 for scheduler in self.schedulers}, obs)
         else:
             self.model.eval()
@@ -326,7 +360,7 @@ class QueueingNetwork3(QueueingNetwork2):
 
 
 def make_rlenv(cls):
-    class QueueingNetwork4(cls):
+    class RLEnv(cls):
         """This environment deletes the done schedulers during episodes to keep compatible with RLlib."""
 
         def __init__(self, scenario):
@@ -337,7 +371,7 @@ def make_rlenv(cls):
             for scheduler in self.schedulers:
                 self.dlt_agent(scheduler)
             return super().step(actions)
-    return QueueingNetwork4
+    return RLEnv
 
 
 def make_raw_env(cls):
@@ -354,20 +388,18 @@ class RLlibEnv(MultiAgentEnv):
 
     def __init__(self, conf):
         """Create a new queueing network env compatible with RLlib."""
-        self.has_encoder = conf.has_encoder
-        if conf.has_encoder:
-            rlenv = make_rlenv(QueueingNetwork3)
+        self.has_encoder = conf.use_belief
+        if self.has_encoder:
+            rlenv = make_rlenv(QueueingNetwork4)
+            self.model = self.raw_env.model
         else:
             rlenv = make_rlenv(QueueingNetwork2)
+
         self.raw_env = make_raw_env(rlenv)(conf)
         self.silent = conf.silent
 
         self.observation_spaces = self.raw_env.observation_spaces
         self.action_spaces = self.raw_env.action_spaces
-        try:
-            self.model = self.raw_env.model
-        except AttributeError:
-            pass
         self.schedulers = self.raw_env.schedulers
 
     def reset(self):
@@ -390,13 +422,10 @@ class RLlibEnv(MultiAgentEnv):
         infos = {k: {'done': dones[k]} for k in self.schedulers}
         # Agents can communicate
         if self.has_encoder:
-            if not self.silent:
-                belief = {scheduler: torch.cat(obss[1][env.index_map[scheduler]], dim=0).cpu().numpy()
-                          for scheduler in self.schedulers}
-                new_obs = {k: np.concatenate((v, np.array(obss[0][env.index_map[k]]).reshape(obs_servers, 1)), axis=1)
-                           for k, v in belief.items()}
-            else:
-                new_obs = {scheduler: np.array(obss[0][env.index_map[scheduler]]) for scheduler in self.schedulers}
+            belief = {scheduler: torch.cat(obss[1][env.index_map[scheduler]], dim=0).cpu().numpy()
+                      for scheduler in self.schedulers}
+            new_obs = {k: np.concatenate((v, np.array(obss[0][env.index_map[k]]).reshape(obs_servers, 1)), axis=1)
+                       for k, v in belief.items()}
         else:
             new_obs = {k: v[0] for k, v in obss.items()}
 
@@ -406,12 +435,16 @@ class RLlibEnv(MultiAgentEnv):
 class MainEnv(gym.Env):
     """"""
     def __init__(self, conf):
-        self.raw_env = make_raw_env(QueueingNetwork3)(conf)
+        self.has_encoder = conf.use_belief
+        if self.has_encoder:
+            self.raw_env = make_raw_env(QueueingNetwork5)(conf)
+            self.model = self.raw_env.model
+        else:
+            self.raw_env = make_raw_env(QueueingNetwork2)(conf)
 
         self.observation_spaces = self.raw_env.observation_spaces
         self.action_spaces = self.raw_env.action_spaces
         self.schedulers = self.raw_env.schedulers
-        self.model = self.raw_env.model
         self.messages = self.raw_env.messages
 
     def reset(self):
@@ -436,6 +469,7 @@ class MainEnv(gym.Env):
 
 
 class VectorEnv:
+    """Not used for now."""
     def __init__(self, make_env_fn, n, config):
         self.envs = tuple(make_env_fn(config) for _ in range(n))
         self.action_spaces = self.envs[0].action_spaces
@@ -463,23 +497,3 @@ class VectorEnv:
                 observation = env.reset()
             return_values.append((observation, reward, done, info))
         return tuple(return_values)
-
-
-if __name__ == '__main__':
-    with open('../../../config/PartialAccess.json', 'r') as f:
-        config = DotDic(json.loads(f.read()))
-    config.training = False
-    config.has_encoder = True
-    env = RLlibEnv(config)
-    obss = env.reset()
-    step = 0
-    dones = {'__all__': False}
-    while not dones['__all__']:
-        # Random policy
-        actions = {scheduler: action_space.sample() for scheduler, action_space in env.action_spaces.items()}
-
-        obss, r, dones, info = env.step(actions)
-        print('timestep:', step + 1)
-        print(obss)
-        print('_' * 80)
-        step += 1

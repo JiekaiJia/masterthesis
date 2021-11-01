@@ -28,8 +28,7 @@ class BasicScenario:
 
     def reset(self):
         self.packages = [CreatePackage(self.conf.n_packages, self.conf.arrival_rate, scheduler.name) for scheduler
-                         in
-                         self.schedulers]
+                         in self.schedulers]
         self.drop_pkgs = {scheduler.name: 0 for scheduler in self.schedulers}
 
     def benchmark_data(self, scheduler):
@@ -41,8 +40,11 @@ class BasicScenario:
         rew = 0
         for other in self.schedulers:
             if other is not scheduler:
+                # todo: for belief structure, implement communication reward.
+                # todo: can't use message cost, because we need reward for comparison of with/out communication.
                 if self.send_msg(scheduler):
                     rew -= math.log(len(self.servers), 10)
+            # todo: can't use total reward as scheduler reward, the training will not converge.
             # rew -= self.drop_pkgs[other.name]
             rew -= self.drop_pkgs[scheduler.name]
         return rew
@@ -106,7 +108,6 @@ class PartialAccessScenario(BasicScenario):
             random.seed(conf.random_seed)
         idxs = [i for i in range(len(self.servers))]
         random.shuffle(idxs)
-        # print(idxs)
         for i, scheduler in enumerate(self.schedulers):
             for j in range(self.obs_servers):
                 scheduler.obs_servers.append(self.servers[idxs[(i+j) % len(idxs)]])
@@ -118,9 +119,6 @@ class PartialAccessScenario(BasicScenario):
         for server in self.servers:
             self.real_obs_s[server] = random.choice(server.access_schedulers)
             tmp[server.name] = self.real_obs_s[server].name
-
-        # print(tmp)
-        # print(self.delay_t)
 
     def reset_delay_t(self):
         self.delay_t = np.random.randint(1, high=4, size=self.conf.n_schedulers)
