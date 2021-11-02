@@ -1,4 +1,5 @@
-"""https://github.com/minqi/learning-to-communicate-pytorch"""
+"""https://github.com/minqi/learning-to-communicate-pytorch
+This file is used to train belief models."""
 import json
 
 import gym

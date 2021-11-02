@@ -7,7 +7,7 @@ import numpy as np
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from scipy.special import softmax
 
-from models import MVAE
+from belief_models import MVAE
 from scenario import PartialcommScenario
 
 logger = logging.getLogger(__name__)
@@ -239,7 +239,9 @@ class QueueingNetwork2(BasicNetwork):
 
     def step(self, actions):
         # Make sure action dimension to be correct.
-        assert len(actions[self.schedulers[0]]) == self.action_spaces[self.schedulers[0]].shape[0], 'Wrong action dimension!!'
+        for k, v in actions.items():
+            assert len(v) == self.action_spaces[k].shape[0], 'Wrong action dimension!!'
+            break
         # Set the current action distribution and communication probability.
         # todo: implement silent action spaces
         for scheduler, action in actions.items():
@@ -287,7 +289,8 @@ class QueueingNetwork3(QueueingNetwork2):
 
         if not self.training:
             try:
-                self.model.load_state_dict(torch.load(scenario.conf.check_path + '/' + self.model_name + '.pth')['state_dict'])
+                # Must use absolute path, otherwise the other atctors except main actor can't find model parameters.
+                self.model.load_state_dict(torch.load('/content/drive/MyDrive/Data Science/pythonProject/masterthesis/model_states/belief_encoder10_4167_59.95.pth')['state_dict'])
             except FileNotFoundError:
                 print('No existed trained model, using initial parameters.')
 
@@ -388,16 +391,23 @@ class RLlibEnv(MultiAgentEnv):
 
     def __init__(self, conf):
         """Create a new queueing network env compatible with RLlib."""
+        self.silent = conf.silent
         self.has_encoder = conf.use_belief
+        
         if self.has_encoder:
             rlenv = make_rlenv(QueueingNetwork4)
-            self.model = self.raw_env.model
+            print('Now using environment with belief!!!')
         else:
             rlenv = make_rlenv(QueueingNetwork2)
+            print('Now using environment without belief!!!')
 
         self.raw_env = make_raw_env(rlenv)(conf)
-        self.silent = conf.silent
 
+        try:
+            self.model = self.raw_env.model
+        except AttributeError:
+            pass
+        
         self.observation_spaces = self.raw_env.observation_spaces
         self.action_spaces = self.raw_env.action_spaces
         self.schedulers = self.raw_env.schedulers
@@ -439,8 +449,10 @@ class MainEnv(gym.Env):
         if self.has_encoder:
             self.raw_env = make_raw_env(QueueingNetwork5)(conf)
             self.model = self.raw_env.model
+            print('Now using environment with belief!!!')
         else:
             self.raw_env = make_raw_env(QueueingNetwork2)(conf)
+            print('Now using environment without belief!!!')
 
         self.observation_spaces = self.raw_env.observation_spaces
         self.action_spaces = self.raw_env.action_spaces
