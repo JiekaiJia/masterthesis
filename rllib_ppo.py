@@ -21,7 +21,7 @@ class RLlibAgent:
         # Initialize ray and trainer object
         ray.init(
             ignore_reinit_error=True,
-            # local_mode=True,
+            local_mode=True,
             # log_to_driver=False
         )
 
@@ -39,13 +39,13 @@ class RLlibAgent:
         config['num_workers'] = 3  # euler 20
         # config['num_envs_per_worker'] = 1
 
-        config['train_batch_size'] = 600
+        # config['train_batch_size'] = 600  # todo: increased.
 
         # === Settings for the Trainer process ===
         # Whether layers should be shared for the value function.
         config['model'] = {
-            'fcnet_hiddens': [128, 128],
-            'fcnet_activation': 'relu',
+            'fcnet_hiddens': [256, 256],  # todo: [256, 256]
+            'fcnet_activation': 'tanh',  # todo: tanh
             # 'vf_share_layers': False,
             # 'use_lstm': True,
             # 'max_seq_len': 40,
@@ -95,7 +95,7 @@ class RLlibAgent:
             checkpoint_at_end=True,
             local_dir=conf['local_dir'],
             checkpoint_freq=conf['checkpoint_freq'],
-            # restore='./ray_results/PPO/PPO_rllib_network-v0_c57d5_00000_0_2021-10-31_13-09-25/checkpoint_000050/checkpoint-50'
+            # restore='/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c8e5f_00000_0_2021-11-02_00-49-50/checkpoint_002400/checkpoint-2400'
         )
         return analysis
     
@@ -124,13 +124,14 @@ class RLlibAgent:
         # run until episode ends
         episode_reward, steps = 0, 0
         drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
-        for _ in range(60):
+        for _ in range(1):
             step = 0
             done = {'__all__': False}
             obs = env.reset()
             while not done['__all__']:
                 step += 1
                 actions = self.agent.compute_actions(obs, policy_id='shared')
+                print('actions:',actions)
                 obs, reward, done, info = env.step(actions)
                 # print('timestep:', step)
                 # print('obs:', obs)
@@ -191,6 +192,7 @@ if __name__ == '__main__':
     if args.test:
         analysis = ppo_agent.load_exp_results(f'./ray_results/{conf["experiment_name"]}')
         path = ppo_agent.get_checkpoints_path(analysis)
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c8e5f_00000_0_2021-11-02_00-49-50/checkpoint_002400/checkpoint-2400'
         ppo_agent.load(path)
         ppo_agent.test()
     else:

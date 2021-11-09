@@ -28,14 +28,15 @@ if __name__ == '__main__':
         step = 0
         dones = {'__all__': False}
         while not dones['__all__']:
-            # Random policy
+            # print('timestep:', step + 1)
             actions = {scheduler: policy.get_actions(obs) for scheduler, obs in obss.items()}
 
             obss, r, dones, info = env.step(actions)
-            obss = {scheduler: obs[0] for scheduler, obs in obss.items()}
+            _obss = obss
+            obss = {scheduler: obs[0] for scheduler, obs in _obss.items()}
+            real_obss = {scheduler: obs[1] for scheduler, obs in _obss.items()}
             acc_r += sum(r.values())
-            # print('timestep:', step + 1)
-            # print(obss)
+            # print('real_obss', real_obss)
             # print('_' * 80)
             step += 1
         for k, v in env.acc_drop_pkgs.items():

@@ -17,14 +17,18 @@ class BasicNetwork(gym.Env):
     def __init__(self, scenario):
         self.scenario = scenario
 
-        self.schedulers = [scheduler.name for scheduler in self.scenario.schedulers]
-        self.servers = [server.name for server in self.scenario.servers]
+        self.schedulers = [scheduler.name for scheduler in scenario.schedulers]
+        self.servers = [server.name for server in scenario.servers]
         self.num_schedulers = len(self.schedulers)
-        self.index_map = {scheduler.name: idx for idx, scheduler in enumerate(self.scenario.schedulers)}
-        self.messages = {scheduler.name: scheduler.msg for idx, scheduler in enumerate(self.scenario.schedulers)}
+        self.index_map = {scheduler.name: idx for idx, scheduler in enumerate(scenario.schedulers)}
+        self.messages = {scheduler.name: scheduler.msg for idx, scheduler in enumerate(scenario.schedulers)}
+        self.act_frequency = scenario.conf.act_frequency
+        self.used_actions = {}
 
         # global discrete time step.
         self.steps = 1
+        # local discrete time step
+        self.local_steps = 0
 
     def reset(self):
         self.rewards = {}
@@ -237,19 +241,54 @@ class QueueingNetwork2(BasicNetwork):
             scheduler = self.scenario.schedulers[self.index_map[name]]
             scheduler.action.a = softmax(self.current_actions[name])
 
-    def step(self, actions):
-        # Make sure action dimension to be correct.
-        for k, v in actions.items():
-            assert len(v) == self.action_spaces[k].shape[0], 'Wrong action dimension!!'
-            break
-        # Set the current action distribution and communication probability.
-        # todo: implement silent action spaces
-        for scheduler, action in actions.items():
-            self.current_actions[scheduler] = action[:-1]
-            self.p[scheduler] = action[-1]
+    def _step(self):
+        for name in self.schedulers:
+            scheduler = self.scenario.schedulers[self.index_map[name]]
+            key = scheduler.name
+            self.scenario.drop_pkgs[key] = 0
 
-        self._action_trans()
-        self._execute_step()
+            packages = self.scenario.packages[self.index_map[key]].packages
+            # If scheduler has no packages, then it will be set to done.
+            if not scheduler and not packages:
+                self.dones[key] = True
+
+            if self.dones[key]:
+                continue
+            # Scheduler will receive the packages when packages arriving time is smaller than global discrete timestep.
+            while packages and self.steps >= packages[0].arriving_time:
+                scheduler.receive(packages.pop(0))
+            # print(key + f' receives {rec_pkgs} packages.')
+            if not scheduler:
+                continue
+
+        # Serve the packages that should departure before current timestep.
+        for server in self.scenario.servers:
+            server.serve(self.steps)
+
+        # Calculate the rewards.
+        for name in self.schedulers:
+            self.rewards[name] = 0
+
+    def step(self, actions):
+        # Whether do actions or not.
+        if self.steps > 1 and self.local_steps < self.act_frequency:
+            self.local_steps += 1
+            self._step()
+        else:
+            # print('do actions')
+            self.local_steps = 0
+            # Make sure action dimension to be correct.
+            for k, v in actions.items():
+                assert len(v) == self.action_spaces[k].shape[0], 'Wrong action dimension!!'
+                break
+            # Set the current action distribution and communication probability.
+            # todo: implement silent action spaces
+            for scheduler, action in actions.items():
+                self.current_actions[scheduler] = action[:-1]
+                self.p[scheduler] = action[-1]
+
+            self._action_trans()
+            self._execute_step()
 
         for server in self.scenario.servers:
             server.history_len.append(len(server))

@@ -12,6 +12,7 @@
   "obs_servers": 5,
   "delay_change_frequency": 10,
   "use_belief": false,
+  "act_frequency": 2,
 
   "_comment2": "belief model training setting",
   "belief_training": false,
@@ -26,8 +27,8 @@
 
   "_comment3": "PPO model training setting",
   "alg_name": "PPO",
-  "training_iteration": 350,
+  "training_iteration": 5000,
   "local_dir": "./ray_results",
-  "checkpoint_freq": 50,
+  "checkpoint_freq": 200,
   "restore_from_previous_model": false
 }
