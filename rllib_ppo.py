@@ -6,7 +6,7 @@ from ray.tune.registry import register_env
 import torch
 
 from custom_env.environment import RLlibEnv
-from dotdic import DotDic
+from utils import DotDic
 
 
 class RLlibAgent:
@@ -36,8 +36,8 @@ class RLlibAgent:
         # int(os.environ.get('RLLIB_NUM_GPUS', '0'))
         # config['num_gpus_per_worker'] = (1-0.0001)/3
         # Number of rollout worker actors to create for parallel sampling.
-        config['num_workers'] = 3  # euler 20
-        # config['num_envs_per_worker'] = 1
+        config['num_workers'] = 2  # euler 20
+        config['num_envs_per_worker'] = 10
 
         # config['train_batch_size'] = 600  # todo: increased.
 
@@ -124,14 +124,14 @@ class RLlibAgent:
         # run until episode ends
         episode_reward, steps = 0, 0
         drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
-        for _ in range(1):
+        for _ in range(60):
             step = 0
             done = {'__all__': False}
             obs = env.reset()
             while not done['__all__']:
                 step += 1
                 actions = self.agent.compute_actions(obs, policy_id='shared')
-                print('actions:',actions)
+                # print('actions:',actions)
                 obs, reward, done, info = env.step(actions)
                 # print('timestep:', step)
                 # print('obs:', obs)
@@ -191,8 +191,10 @@ if __name__ == '__main__':
 
     if args.test:
         analysis = ppo_agent.load_exp_results(f'./ray_results/{conf["experiment_name"]}')
-        path = ppo_agent.get_checkpoints_path(analysis)
-        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c8e5f_00000_0_2021-11-02_00-49-50/checkpoint_002400/checkpoint-2400'
+        # path = ppo_agent.get_checkpoints_path(analysis)
+        path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_12944_00000_0_2021-11-09_02-02-20/checkpoint_000300/checkpoint-300'
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_38f7a_00000_0_2021-10-31_16-25-55/checkpoint_000350/checkpoint-350'
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_7a832_00000_0_2021-11-09_09-29-03/checkpoint_000150/checkpoint-150'
         ppo_agent.load(path)
         ppo_agent.test()
     else:

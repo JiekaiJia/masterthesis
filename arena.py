@@ -7,7 +7,7 @@ from tensorboardX import SummaryWriter
 import torch
 import torch.optim as optim
 
-from dotdic import DotDic
+from utils import DotDic
 import custom_env
 
 

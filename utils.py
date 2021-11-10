@@ -1,5 +1,5 @@
 """https://github.com/minqi/learning-to-communicate-pytorch"""
-import numpy as np
+import bisect
 import copy
 
 
@@ -10,3 +10,11 @@ class DotDic(dict):
 
     def __deepcopy__(self, memo=None):
         return DotDic(copy.deepcopy(dict(self), memo=memo))
+
+
+def index(a, x):
+    """Get the position of x, when inserting x into a."""
+    i = bisect.bisect_left(a, x)
+    if i != len(a):
+        return i
+    raise ValueError

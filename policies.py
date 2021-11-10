@@ -15,7 +15,7 @@ class RandomPolicy(BasicPolicy):
 
     def get_actions(self, obs):
         # Dispatch packages to the queue with gaussian distributions.
-        act = np.random.randn(len(obs)+2)
+        act = np.random.randn(len(obs)+1)
         return act
 
 
@@ -25,12 +25,9 @@ class ShortestQPolicy(BasicPolicy):
 
     def get_actions(self, obs):
         # Dispatch packages to the queue with shortest queue length.
-        act = [0]*(len(obs)+2)
+        act = [-float('inf')]*(len(obs)+1)
         idx = np.argmin(obs)
-        if obs[idx] < self.conf.queue_max_len:
-            act[idx+1] = 1
-        else:
-            act[0] = 1
+        act[idx] = 0
         return act
 
 # class PPOPolicy(BasicPolicy):

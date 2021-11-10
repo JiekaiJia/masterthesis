@@ -45,13 +45,12 @@ class BasicNetwork(gym.Env):
         transmit_q = []
         for name in self.schedulers:
             scheduler = self.scenario.schedulers[self.index_map[name]]
-            key = scheduler.name
-            self.scenario.drop_pkgs[key] = 0
+            self.scenario.drop_pkgs[name] = 0
 
-            packages = self.scenario.packages[self.index_map[key]].packages
+            packages = self.scenario.packages[self.index_map[name]].packages
             # If scheduler has no packages, then it will be set to done.
             if not scheduler and not packages:
-                self.dones[key] = True
+                self.dones[name] = True
 
             # Not every environment needs update messages.
             try:
@@ -59,7 +58,7 @@ class BasicNetwork(gym.Env):
             except AttributeError:
                 pass
 
-            if self.dones[key]:
+            if self.dones[name]:
                 continue
             rec_pkgs = 0
             # Scheduler will receive the packages when packages arriving time is smaller than global discrete timestep.
@@ -133,6 +132,9 @@ class BasicNetwork(gym.Env):
 
     def state(self):
         return self.scenario.env_state()
+
+    def schedulers_state(self):
+        return self.scenario.schedulers_state()
 
     def observe(self):
         return {scheduler: self.scenario.observation(self.scenario.schedulers[self.index_map[scheduler]]) for scheduler
@@ -244,20 +246,21 @@ class QueueingNetwork2(BasicNetwork):
     def _step(self):
         for name in self.schedulers:
             scheduler = self.scenario.schedulers[self.index_map[name]]
-            key = scheduler.name
-            self.scenario.drop_pkgs[key] = 0
+            self.scenario.drop_pkgs[name] = 0
 
-            packages = self.scenario.packages[self.index_map[key]].packages
+            packages = self.scenario.packages[self.index_map[name]].packages
             # If scheduler has no packages, then it will be set to done.
             if not scheduler and not packages:
-                self.dones[key] = True
+                self.dones[name] = True
 
-            if self.dones[key]:
+            if self.dones[name]:
                 continue
             # Scheduler will receive the packages when packages arriving time is smaller than global discrete timestep.
             while packages and self.steps >= packages[0].arriving_time:
                 scheduler.receive(packages.pop(0))
             # print(key + f' receives {rec_pkgs} packages.')
+            # Update package halt time.
+            scheduler.update_halt_t()
             if not scheduler:
                 continue
 
@@ -509,6 +512,9 @@ class MainEnv(gym.Env):
 
     def state(self):
         return self.raw_env.state()
+
+    def schedulers_state(self):
+        return self.raw_env.schedulers_state()
 
     def step(self, actions):
         obss, rews, dones, infos = self.raw_env.step(actions)

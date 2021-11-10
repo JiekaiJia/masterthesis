@@ -2,9 +2,12 @@
 import math
 import numpy as np
 
+from utils import index
+
 
 class Agent:
     def __init__(self, agent_id):
+        # Starting from 1,2,3,4,...
         self.id = agent_id
         self.c_noise = None
         self.name = ''
@@ -47,27 +50,25 @@ class Scheduler(Agent):
 
     def send(self):
         nums = len(self.queue)
-        res = nums
-        pkgs_to_send = [a * nums for a in self.action.a]
+        p = np.random.rand(nums)
+        th_p = np.cumsum(self.action.a)
         packets = []
-        while res > 0:
-            act_index = np.argmax(pkgs_to_send)
-            pkg_num = math.ceil(pkgs_to_send[act_index])
-            pkgs_to_send[act_index] = 0
-            res -= pkg_num
-            if res < 0:
-                pkg_num += res
-            if act_index == 0:
-                continue
-            for _ in range(pkg_num):
-                packets.append(self.queue.pop(0))
-                packets[-1].target = act_index if not self.obs_servers else self.obs_servers[act_index-1].id
-                packets[-1].sending_time = packets[-1].arriving_time + packets[-1].halt_time
+        for i, _p in enumerate(p):
+            # According to threshold value, decide which server to send.
+            act_index = index(th_p, _p)
+            packets.append(self.queue.pop(0))
+            packets[-1].target = act_index + 1 if not self.obs_servers else self.obs_servers[act_index].id
+            packets[-1].sending_time = packets[-1].arriving_time + packets[-1].halt_time
+        assert len(self.queue) == 0, "The scheduler queue must be empty after dispatching packages !!"
+        # print([j.id for j in self.obs_servers])
+        # print(self.action.a)
+        # print(self.name + f' sends {len(packets)} packages to server {[a.target for a in packets]}.')
+        return packets
+
+    def update_halt_t(self):
         # Update package halt time, if packages are still in queue.
         for pkg in self.queue:
             pkg.halt_time += 1
-        # print(self.name + f' sends {len(packets)} packages to server {[a.target for a in packets]}.')
-        return packets
 
 
 class Server(Agent):
