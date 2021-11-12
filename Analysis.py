@@ -4,23 +4,23 @@ import matplotlib.pyplot as plt
 actions_frequency = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 # Mean episode reward that based on different action frequency
 rewards = {
-    'ShortQPolicy': (-1566.65, -2204.58, -2745.91, -3306.14, -3322.42, -3575.44, -4100.49, -3918.7, -4464.57, -4131.26, -4417.94),
-    'RandomPolicy': (-799.68, -1607.42, -2427.05, -2983.97, -3317.99, -3553.98, -3767.18, -3988.17, -4314.39, -4132.04, -4278.20),
-    'ppo_256_tanh': (0, -26292.00),
-    'belief_ppo_256_tanh': (0, -25683.33),
-    'belief_ppo_128_relu': (-10011.67, )
+    'ShortQPolicy': (-76.31, -98.03, -131.91, -179.79, -202.16, -214.82, -224.43, -232.39, -236.78, -245.22, -255.93),
+    'RandomPolicy': (-90.99, -113.58, -140.9, -167.35, -196.23, -222.81, -248.45, -271.7, -297.7, -315.72, -336.48),
+    'ppo_256_tanh': (-66.2, -70.92, -81.48, -99.94, -111.65, -132.74, -152.82, -176.44, -200.39, -223.0, -243.7),
+    'belief_ppo_256_tanh': (),
+    'belief_ppo_128_relu': ()
 }
 
 episode_len = {
-    'ShortQPolicy': (60.56, 61.7, 61.98, 62.2, 62.54, 62.7, 64.83, 65.67, 65.0, 63.42, 67.91),
-    'RandomPolicy': (60.73, 61.18, 61.77, 62.13, 62.58, 62.65, 64.71, 65.67, 65.00, 63.33, 67.91),
-    'belief_ppo_256_tanh': (0, 67.15)
+    'ShortQPolicy': (81.33, 82.3, 81.85, 82.4, 82.92, 82.8, 83.84, 83.07, 83.97, 85.67, 86.61),
+    'RandomPolicy': (80.58, 81.68, 82.15, 82.57, 82.46, 83.8, 84.08, 83.87, 84.58, 84.75, 85.88),
+    'ppo_256_tanh': (60.67, 61.43, 61.95, 62.33, 62.50, 63.10, 64.77, 66.00, 65.00, 62.83, 68.00),
 }
 
 episode_pkg_drop = {
-    'ShortQPolicy': (0.31, 0.44, 0.55, 0.66, 0.66, 0.72, 0.82, 0.78, 0.89, 0.83, 0.88),
-    'RandomPolicy': (0.16, 0.32, 0.49, 0.6, 0.66, 0.71, 0.75, 0.8, 0.86, 0.83, 0.85),
-    'belief_ppo_256_tanh': (0, 67.15)
+    'ShortQPolicy': (0.13, 0.16, 0.22, 0.3, 0.34, 0.36, 0.37, 0.39, 0.39, 0.41, 0.43),
+    'RandomPolicy': (0.15, 0.19, 0.24, 0.28, 0.33, 0.37, 0.41, 0.45, 0.5, 0.53, 0.56),
+    'ppo_256_tanh': (0.15, 0.31, 0.49, 0.59, 0.66, 0.71, 0.75, 0.78, 0.83, 0.84, 0.83),
 }
 
 
@@ -28,25 +28,30 @@ if __name__ == '__main__':
     plt.figure(figsize=(10, 5))
     plt.plot(actions_frequency, rewards['ShortQPolicy'])
     plt.plot(actions_frequency, rewards['RandomPolicy'])
+    plt.plot(actions_frequency, rewards['ppo_256_tanh'])
+    # plt.xlim((0, 3))
+    # plt.ylim((-3000, -600))
     plt.xlabel('actions_frequency')
     plt.ylabel('Mean episode reward')
-    plt.legend(['ShortQPolicy', 'RandomPolicy'])
+    plt.legend(['ShortQPolicy', 'RandomPolicy', 'ppo_256_tanh'])
     plt.title('Mean episode reward vs. No. of actions_frequency')
 
-    plt.figure(figsize=(10, 5))
-    plt.plot(actions_frequency, episode_len['ShortQPolicy'])
-    plt.plot(actions_frequency, episode_len['RandomPolicy'])
-    plt.xlabel('actions_frequency')
-    plt.ylabel('Mean episode length')
-    plt.legend(['ShortQPolicy', 'RandomPolicy'])
-    plt.title('Mean episode length vs. No. of actions_frequency')
-
+    # plt.figure(figsize=(10, 5))
+    # plt.plot(actions_frequency, episode_len['ShortQPolicy'])
+    # plt.plot(actions_frequency, episode_len['RandomPolicy'])
+    # plt.plot(actions_frequency, episode_len['ppo_256_tanh'])
+    # plt.xlabel('actions_frequency')
+    # plt.ylabel('Mean episode length')
+    # plt.legend(['ShortQPolicy', 'RandomPolicy', 'ppo_256_tanh'])
+    # plt.title('Mean episode length vs. No. of actions_frequency')
+    #
     plt.figure(figsize=(10, 5))
     plt.plot(actions_frequency, episode_pkg_drop['ShortQPolicy'])
     plt.plot(actions_frequency, episode_pkg_drop['RandomPolicy'])
+    plt.plot(actions_frequency, episode_pkg_drop['ppo_256_tanh'])
     plt.xlabel('actions_frequency')
     plt.ylabel('package drop rate')
-    plt.legend(['ShortQPolicy', 'RandomPolicy'])
+    plt.legend(['ShortQPolicy', 'RandomPolicy', 'ppo_256_tanh'])
     plt.title('Package drop rate vs. No. of actions_frequency')
     plt.show()
 

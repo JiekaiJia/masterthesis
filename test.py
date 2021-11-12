@@ -22,18 +22,18 @@ if __name__ == '__main__':
     config.training = False
     config.use_belief = False
     config.silent = True
-    # Initialize Policy
-    policy = policies.ShortestQPolicy(config)
-    print(f'{policy.__class__.__name__} start running!!')
     mean_episode_rewards, mean_episode_length, total_drp_pkg_rate = [], [], []
     # act_frequencies = args.act_frequency
-    act_frequencies = range(11)
+    act_frequencies = range(1)
     for act_frequency in act_frequencies:
         config.act_frequency = act_frequency
         # Initialize Environment
         env = MainEnv(config)
+        # Initialize Policy
+        policy = policies.RandomPolicy(config, env)
+        print(f'{policy.__class__.__name__} start running!!')
         acc_r, steps = 0, 0
-        num_e = 120
+        num_e = 1
         drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
         for _ in tqdm.tqdm(range(num_e)):
             obss = env.reset()
@@ -42,7 +42,7 @@ if __name__ == '__main__':
             dones = {'__all__': False}
             while not dones['__all__']:
                 # print('timestep:', step + 1)
-                actions = {scheduler: policy.get_actions(obs) for scheduler, obs in obss.items()}
+                actions = {scheduler: policy.get_gactions(obs) for scheduler, obs in obss.items()}
                 obss, r, dones, info = env.step(actions)
                 _obss = obss
                 obss = {scheduler: obs[0] for scheduler, obs in _obss.items()}
@@ -56,6 +56,8 @@ if __name__ == '__main__':
                 # print(env.acc_drop_pkgs)
                 # print('_' * 80)
                 step += 1
+            if env.acc_drop_pkgs[env.schedulers[0]] == 60:
+                break
             for k, v in env.acc_drop_pkgs.items():
                 drop_pkg[k] += v
             steps += step

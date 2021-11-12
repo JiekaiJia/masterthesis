@@ -9,6 +9,7 @@ from scipy.special import softmax
 
 from belief_models import MVAE
 from scenario import PartialcommScenario
+from utils import sigmoid
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,6 @@ class BasicNetwork(gym.Env):
             while packages and self.steps >= packages[0].arriving_time:
                 rec_pkgs += 1
                 scheduler.receive(packages.pop(0))
-            # print(key + f' receives {rec_pkgs} packages.')
             if not scheduler:
                 continue
             # Scheduler sends the packages.
@@ -147,6 +147,7 @@ class BasicNetwork(gym.Env):
 class QueueingNetwork1(BasicNetwork):
     """In this network the schedulers have access to all servers but with only partial observations.
     Each scheduler broadcasts messages."""
+
     def __init__(self, scenario):
         super().__init__(scenario)
 
@@ -184,7 +185,7 @@ class QueueingNetwork1(BasicNetwork):
             idx = np.argmax(act_norm)
 
             comm_action = idx
-            action = acts[idx, :].reshape(-1,)
+            action = acts[idx, :].reshape(-1, )
 
             if not scheduler.silent:
                 scenario_action = [softmax(action), comm_action]
@@ -211,24 +212,30 @@ class QueueingNetwork1(BasicNetwork):
 class QueueingNetwork2(BasicNetwork):
     """In this network the schedulers observe queue state with a transmit delay. This delay time will change every
     n steps. Besides, the schedulers only have partial access and observability to the queue."""
+
     def __init__(self, scenario):
         super().__init__(scenario)
-        self.frequency = self.scenario.frequency
+        self.frequency = scenario.frequency
 
-        self.max_q_len = max([server.queue_max_len for server in self.scenario.servers])
+        self.max_q_len = max([server.queue_max_len for server in scenario.servers])
 
         # set action spaces and observation spaces.
-        self.action_spaces = dict()
-        self.observation_spaces = dict()
-        for scheduler in self.scenario.schedulers:
-            action_dim = self.scenario.dim_a
-
-            obs_dim = len(self.scenario.observation(scheduler)[0])
+        self.action_spaces, self.observation_spaces = {}, {}
+        self.silent = scenario.silent
+        action_dim = scenario.dim_a
+        obs_dim = len(scenario.observation(scenario.schedulers[0])[0])
+        for scheduler in scenario.schedulers:
+            name = scheduler.name
             # Action space is the action distribution + communication probability.
-            # todo: implement silent action spaces
-            self.action_spaces[scheduler.name] = gym.spaces.Box(low=0, high=1, shape=(action_dim+1,), dtype=np.float32)
+            # todo: actions don't respect to box bound， Ray-1.8
+            if self.silent:
+                self.action_spaces[name] = gym.spaces.Box(low=0, high=1, shape=(action_dim,),
+                                                          dtype=np.float32)
+            else:
+                self.action_spaces[name] = gym.spaces.Box(low=0, high=1, shape=(action_dim + 1,),
+                                                          dtype=np.float32)
             # observe queue's length.
-            self.observation_spaces[scheduler.name] = gym.spaces.Box(
+            self.observation_spaces[name] = gym.spaces.Box(
                 low=0, high=self.max_q_len, shape=(obs_dim,), dtype=np.int32)
 
     def reset(self):
@@ -242,6 +249,10 @@ class QueueingNetwork2(BasicNetwork):
         for name in self.schedulers:
             scheduler = self.scenario.schedulers[self.index_map[name]]
             scheduler.action.a = softmax(self.current_actions[name])
+            try:
+                self.p[name] = sigmoid(self.p[name])
+            except KeyError:
+                pass
 
     def _step(self):
         for name in self.schedulers:
@@ -258,7 +269,6 @@ class QueueingNetwork2(BasicNetwork):
             # Scheduler will receive the packages when packages arriving time is smaller than global discrete timestep.
             while packages and self.steps >= packages[0].arriving_time:
                 scheduler.receive(packages.pop(0))
-            # print(key + f' receives {rec_pkgs} packages.')
             # Update package halt time.
             scheduler.update_halt_t()
             if not scheduler:
@@ -285,10 +295,13 @@ class QueueingNetwork2(BasicNetwork):
                 assert len(v) == self.action_spaces[k].shape[0], 'Wrong action dimension!!'
                 break
             # Set the current action distribution and communication probability.
-            # todo: implement silent action spaces
-            for scheduler, action in actions.items():
-                self.current_actions[scheduler] = action[:-1]
-                self.p[scheduler] = action[-1]
+            if self.silent:
+                for scheduler, action in actions.items():
+                    self.current_actions[scheduler] = action
+            else:
+                for scheduler, action in actions.items():
+                    self.current_actions[scheduler] = action[:-1]
+                    self.p[scheduler] = action[-1]
 
             self._action_trans()
             self._execute_step()
@@ -306,6 +319,7 @@ class QueueingNetwork2(BasicNetwork):
 class QueueingNetwork3(QueueingNetwork2):
     """This network is based on the configurations of Queueingnetwork2, and addresses beliefs over queue state
     as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
+
     def __init__(self, scenario):
         super().__init__(scenario)
         self.training = scenario.conf.belief_training
@@ -313,7 +327,7 @@ class QueueingNetwork3(QueueingNetwork2):
         self.model_name = scenario.conf.model_name
 
         # set observation spaces.
-        if not scenario.conf.silent:
+        if not self.silent:
             for scheduler in self.scenario.schedulers:
                 # Belief as observation, the scheduler thinks how many packages are in the queue.
                 self.observation_spaces[scheduler.name] = gym.spaces.Box(
@@ -332,7 +346,9 @@ class QueueingNetwork3(QueueingNetwork2):
         if not self.training:
             try:
                 # Must use absolute path, otherwise the other atctors except main actor can't find model parameters.
-                self.model.load_state_dict(torch.load('/content/drive/MyDrive/Data Science/pythonProject/masterthesis/model_states/belief_encoder10_4167_59.95.pth')['state_dict'])
+                self.model.load_state_dict(torch.load(
+                    '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/model_states/belief_encoder10_4167_59.95.pth')[
+                                               'state_dict'])
             except FileNotFoundError:
                 print('No existed trained model, using initial parameters.')
 
@@ -340,6 +356,7 @@ class QueueingNetwork3(QueueingNetwork2):
 class QueueingNetwork4(QueueingNetwork3):
     """This network is based on the configurations of Queueingnetwork2, and addresses beliefs over queue state
     as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
+
     def __init__(self, scenario):
         super().__init__(scenario)
 
@@ -348,8 +365,10 @@ class QueueingNetwork4(QueueingNetwork3):
         # Transform observations to NxL tensors, where N is the number of schedulers
         # and L is the length of observations.
         obs = [None] * self.num_schedulers
+        # real_obs = [None] * self.num_schedulers
         for k, v in observations.items():
             obs[self.index_map[k]] = torch.from_numpy(np.array(v[0]))
+            # real_obs[self.index_map[k]] = torch.from_numpy(np.array(v[1]))
 
         self.model.eval()
         with torch.no_grad():
@@ -361,6 +380,7 @@ class QueueingNetwork4(QueueingNetwork3):
 class QueueingNetwork5(QueueingNetwork3):
     """This network is based on the configurations of Queueingnetwork2, and addresses beliefs over queue state
     as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
+
     def __init__(self, scenario):
         super().__init__(scenario)
 
@@ -416,6 +436,7 @@ def make_rlenv(cls):
             for scheduler in self.schedulers:
                 self.dlt_agent(scheduler)
             return super().step(actions)
+
     return RLEnv
 
 
@@ -425,6 +446,7 @@ def make_raw_env(cls):
             scenario = PartialcommScenario(conf)
             super().__init__(scenario)
             self.metadata['name'] = 'simple_queueing_network_v1'
+
     return RawEnv
 
 
@@ -435,7 +457,7 @@ class RLlibEnv(MultiAgentEnv):
         """Create a new queueing network env compatible with RLlib."""
         self.silent = conf.silent
         self.has_encoder = conf.use_belief
-        
+
         if self.has_encoder:
             rlenv = make_rlenv(QueueingNetwork4)
             print('Now using environment with belief!!!')
@@ -449,7 +471,7 @@ class RLlibEnv(MultiAgentEnv):
             self.model = self.raw_env.model
         except AttributeError:
             pass
-        
+
         self.observation_spaces = self.raw_env.observation_spaces
         self.action_spaces = self.raw_env.action_spaces
         self.schedulers = self.raw_env.schedulers
@@ -480,12 +502,13 @@ class RLlibEnv(MultiAgentEnv):
                        for k, v in belief.items()}
         else:
             new_obs = {k: v[0] for k, v in obss.items()}
-
+        # ('real_obs:', {k: v[1] for k, v in obss.items()})
         return new_obs, rews, dones_, infos
 
 
 class MainEnv(gym.Env):
     """"""
+
     def __init__(self, conf):
         self.has_encoder = conf.use_belief
         if self.has_encoder:
@@ -527,6 +550,7 @@ class MainEnv(gym.Env):
 
 class VectorEnv:
     """Not used for now."""
+
     def __init__(self, make_env_fn, n, config):
         self.envs = tuple(make_env_fn(config) for _ in range(n))
         self.action_spaces = self.envs[0].action_spaces

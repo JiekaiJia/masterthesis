@@ -1,5 +1,4 @@
 """This module provides the basic agent classes, which consist environment."""
-import math
 import numpy as np
 
 from utils import index
@@ -12,6 +11,9 @@ class Agent:
         self.c_noise = None
         self.name = ''
         self.queue = []
+
+    def reset(self):
+        self.queue.clear()
 
     def receive(self, package):
         raise NotImplementedError()
@@ -37,9 +39,6 @@ class Scheduler(Agent):
         # A list of server objects.
         self.obs_servers = []
 
-    def receive(self, package):
-        self.queue.append(package)
-
     def __len__(self):
         return len(self.queue)
 
@@ -47,6 +46,13 @@ class Scheduler(Agent):
         if self.queue:
             return True
         return False
+
+    def reset(self):
+        super().reset()
+        self.msg = [0]
+
+    def receive(self, package):
+        self.queue.append(package)
 
     def send(self):
         nums = len(self.queue)
@@ -80,6 +86,19 @@ class Server(Agent):
         self.access_schedulers = []
         self.history_len = [0]
 
+    def __len__(self):
+        return len(self.queue)
+
+    def __bool__(self):
+        # Decide if server queue is full.
+        if len(self.queue) == self.queue_max_len:
+            return True
+        return False
+
+    def reset(self):
+        super().reset()
+        self.history_len = [0]
+
     def receive(self, package):
         # The time package arrives at server
         pkg_arrival_t = package.sending_time
@@ -98,28 +117,19 @@ class Server(Agent):
             return package
         return None
 
-    def __len__(self):
-        return len(self.queue)
-
-    def __bool__(self):
-        # Decide if server queue is full.
-        if len(self.queue) == self.queue_max_len:
-            return True
-        return False
-
     def serve(self, pkg_arrival_t):
+        if not self.queue:
+            return  # print(f'{self.name} is empty.')
+
         n = len(self.queue)
         self.leaving_pkgs.clear()
-        if not self.queue:
-            return
-
         for i in range(n):
             # The former package leaves before current package arrives.
-            if self.queue[0].departure_time <= pkg_arrival_t:
+            # print(self.queue[0].departure_time, pkg_arrival_t)
+            if self.queue and self.queue[0].departure_time <= pkg_arrival_t:
                 self.leaving_pkgs.append(self.queue.pop(0))
-                if not self.queue:
-                    return
             else:
+                # print(f'{self.name} serves {len(self.leaving_pkgs)} packages and the queue length is {n} before serving.')
                 return
 
     def _serve_time(self):

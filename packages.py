@@ -39,5 +39,5 @@ class Package:
 
 
 if __name__ == '__main__':
-    package = CreatePackage(100, 10, 1)
+    package = CreatePackage(100, 0.9, 1)
     print(package.arrival_time)

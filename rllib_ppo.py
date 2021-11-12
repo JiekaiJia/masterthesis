@@ -21,7 +21,7 @@ class RLlibAgent:
         # Initialize ray and trainer object
         ray.init(
             ignore_reinit_error=True,
-            local_mode=True,
+            # local_mode=True,
             # log_to_driver=False
         )
 
@@ -36,8 +36,8 @@ class RLlibAgent:
         # int(os.environ.get('RLLIB_NUM_GPUS', '0'))
         # config['num_gpus_per_worker'] = (1-0.0001)/3
         # Number of rollout worker actors to create for parallel sampling.
-        config['num_workers'] = 2  # euler 20
-        config['num_envs_per_worker'] = 10
+        config['num_workers'] = self.conf['num_workers']  # euler 20
+        config['num_envs_per_worker'] = self.conf['num_envs_per_worker']
 
         # config['train_batch_size'] = 600  # todo: increased.
 
@@ -95,7 +95,7 @@ class RLlibAgent:
             checkpoint_at_end=True,
             local_dir=conf['local_dir'],
             checkpoint_freq=conf['checkpoint_freq'],
-            # restore='/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c8e5f_00000_0_2021-11-02_00-49-50/checkpoint_002400/checkpoint-2400'
+            # restore='/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_76e74_00000_0_2021-11-10_18-17-29/checkpoint_000150/checkpoint-150'
         )
         return analysis
     
@@ -114,7 +114,8 @@ class RLlibAgent:
         """
         trainer_cls = get_trainer_class(self.conf['alg_name'])
         self.agent = trainer_cls(config=self.set_config(), env=conf['env_name'])
-        self.agent.restore(path)
+        if path:
+            self.agent.restore(path)
 
     def test(self):
         """Test trained agent for a single episode. Return the episode reward"""
@@ -124,27 +125,28 @@ class RLlibAgent:
         # run until episode ends
         episode_reward, steps = 0, 0
         drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
-        for _ in range(60):
+        num_e = 1
+        for _ in range(num_e):
             step = 0
             done = {'__all__': False}
             obs = env.reset()
             while not done['__all__']:
                 step += 1
+                print('timestep:', step)
                 actions = self.agent.compute_actions(obs, policy_id='shared')
-                # print('actions:',actions)
+                print('actions:', actions)
                 obs, reward, done, info = env.step(actions)
-                # print('timestep:', step)
                 # print('obs:', obs)
                 # print('reward:', reward)
-                # print('-'*40)
+                print('-'*40)
                 for k, v in reward.items():
                     episode_reward += v
             for k, v in env.acc_drop_pkgs.items():
                 drop_pkg[k] += v
             steps += step 
-        print(f'mean episode rewards: {episode_reward/60:.2f}')
-        print(f'mean episode length: {steps/60:.2f}')
-        print('mean dropped packages rate:', {k: round(v / (60 * self.conf['n_packages']), 2) for k, v in drop_pkg.items()})
+        print(f'mean episode rewards: {episode_reward/num_e:.2f}')
+        print(f'mean episode length: {steps/num_e:.2f}')
+        print('mean dropped packages rate:', {k: round(v / (num_e * self.conf['n_packages']), 2) for k, v in drop_pkg.items()})
 
         return episode_reward
 
@@ -183,6 +185,13 @@ if __name__ == '__main__':
         assert args.model_name is not None, 'If use belief model, the model name must be given.'
         conf['model_name'] = args.model_name
 
+    if args.test:
+        conf['num_workers'] = 0
+        conf['num_envs_per_worker'] = 1
+    else:
+        conf['num_workers'] = 2
+        conf['num_envs_per_worker'] = 10
+
     # Create test environment.
     env = RLlibEnv(DotDic(conf))
     # Register env
@@ -190,11 +199,14 @@ if __name__ == '__main__':
     ppo_agent = RLlibAgent(conf, env)
 
     if args.test:
-        analysis = ppo_agent.load_exp_results(f'./ray_results/{conf["experiment_name"]}')
+        # analysis = ppo_agent.load_exp_results(f'./ray_results/{conf["experiment_name"]}')
         # path = ppo_agent.get_checkpoints_path(analysis)
-        path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_12944_00000_0_2021-11-09_02-02-20/checkpoint_000300/checkpoint-300'
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_12944_00000_0_2021-11-09_02-02-20/checkpoint_000300/checkpoint-300'
         # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_38f7a_00000_0_2021-10-31_16-25-55/checkpoint_000350/checkpoint-350'
         # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_7a832_00000_0_2021-11-09_09-29-03/checkpoint_000150/checkpoint-150'
+        path = None
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_76e74_00000_0_2021-11-10_18-17-29/checkpoint_000150/checkpoint-150'
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c762f_00000_0_2021-11-10_23-49-01/checkpoint_000350/checkpoint-350'
         ppo_agent.load(path)
         ppo_agent.test()
     else:

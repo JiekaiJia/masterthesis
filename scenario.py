@@ -11,6 +11,7 @@ class BasicScenario:
 
     def __init__(self, conf):
         self.conf = conf
+        self.silent = conf.silent
 
         # Initialize schedulers.
         self.schedulers = [Scheduler(i + 1) for i in range(conf.n_schedulers)]
@@ -27,6 +28,8 @@ class BasicScenario:
         self.reset()
 
     def reset(self):
+        for server in self.servers:
+            server.reset()
         self.packages = [CreatePackage(self.conf.n_packages, self.conf.arrival_rate, scheduler.name) for scheduler
                          in self.schedulers]
         self.drop_pkgs = {scheduler.name: 0 for scheduler in self.schedulers}

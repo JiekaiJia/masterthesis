@@ -1,6 +1,7 @@
 """https://github.com/minqi/learning-to-communicate-pytorch"""
 import bisect
 import copy
+import math
 
 
 class DotDic(dict):
@@ -17,4 +18,9 @@ def index(a, x):
     i = bisect.bisect_left(a, x)
     if i != len(a):
         return i
-    raise ValueError
+    return i-1
+
+
+def sigmoid(x):
+    """x is a scalar, if want to extend to vector use map."""
+    return 1/(1 + math.exp(-x))
