@@ -1,4 +1,6 @@
 from copy import deepcopy
+import logging
+import sys
 
 import ray
 from ray.rllib.agents.registry import get_trainer_class
@@ -7,6 +9,27 @@ import torch
 
 from custom_env.environment import RLlibEnv
 from utils import DotDic
+
+
+# Create a logger.
+logger = logging.getLogger(__name__)
+# Setting logging level to debug
+logger.setLevel(logging.DEBUG)
+# Setting logging format
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+# Create a stream handler
+handler1 = logging.StreamHandler(sys.stdout)
+handler1.setLevel(logging.DEBUG)
+# Create a file handler
+handler2 = logging.FileHandler('PPO_belief_data.log')
+handler2.setLevel(logging.DEBUG)
+
+handler1.setFormatter(formatter)
+handler2.setFormatter(formatter)
+
+# 为日志器logger添加上面创建的处理器handler
+logger.addHandler(handler1)
+logger.addHandler(handler2)
 
 
 class RLlibAgent:
@@ -27,6 +50,7 @@ class RLlibAgent:
 
     def set_config(self):
         conf = self.conf
+        env = self.env
         # Gets default training configuration.
         config = deepcopy(get_trainer_class(conf['alg_name'])._default_config)
 
@@ -36,16 +60,14 @@ class RLlibAgent:
         # int(os.environ.get('RLLIB_NUM_GPUS', '0'))
         # config['num_gpus_per_worker'] = (1-0.0001)/3
         # Number of rollout worker actors to create for parallel sampling.
-        config['num_workers'] = self.conf['num_workers']  # euler 20
-        config['num_envs_per_worker'] = self.conf['num_envs_per_worker']
-
-        # config['train_batch_size'] = 600  # todo: increased.
+        config['num_workers'] = conf['num_workers']  # euler 20
+        config['num_envs_per_worker'] = conf['num_envs_per_worker']
 
         # === Settings for the Trainer process ===
         # Whether layers should be shared for the value function.
         config['model'] = {
-            'fcnet_hiddens': [256, 256],  # todo: [256, 256]
-            'fcnet_activation': 'tanh',  # todo: tanh
+            'fcnet_hiddens': [256, 256],
+            'fcnet_activation': 'tanh',
             # 'vf_share_layers': False,
             # 'use_lstm': True,
             # 'max_seq_len': 40,
@@ -112,7 +134,8 @@ class RLlibAgent:
         Load a trained RLlib agent from the specified path. Call this before testing a trained agent.
         :param path: Path pointing to the agent's saved checkpoint (only used for RLlib agents)
         """
-        trainer_cls = get_trainer_class(self.conf['alg_name'])
+        conf = self.conf
+        trainer_cls = get_trainer_class(conf['alg_name'])
         self.agent = trainer_cls(config=self.set_config(), env=conf['env_name'])
         if path:
             self.agent.restore(path)
@@ -125,20 +148,20 @@ class RLlibAgent:
         # run until episode ends
         episode_reward, steps = 0, 0
         drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
-        num_e = 1
+        num_e = 120
         for _ in range(num_e):
             step = 0
             done = {'__all__': False}
             obs = env.reset()
             while not done['__all__']:
                 step += 1
-                print('timestep:', step)
+                # logger.info(f'timestep: {step}')
                 actions = self.agent.compute_actions(obs, policy_id='shared')
-                print('actions:', actions)
+                # logger.info(f'actions: {actions}')
                 obs, reward, done, info = env.step(actions)
-                # print('obs:', obs)
-                # print('reward:', reward)
-                print('-'*40)
+                # logger.info(f'obs: {obs}')
+                # logger.info(f'reward: {reward}')
+                # logger.info('-'*40)
                 for k, v in reward.items():
                     episode_reward += v
             for k, v in env.acc_drop_pkgs.items():
@@ -205,8 +228,10 @@ if __name__ == '__main__':
         # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_38f7a_00000_0_2021-10-31_16-25-55/checkpoint_000350/checkpoint-350'
         # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_7a832_00000_0_2021-11-09_09-29-03/checkpoint_000150/checkpoint-150'
         path = None
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_bda74_00000_0_2021-11-12_23-10-35/checkpoint_000350/checkpoint-350'
         # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_76e74_00000_0_2021-11-10_18-17-29/checkpoint_000150/checkpoint-150'
         # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c762f_00000_0_2021-11-10_23-49-01/checkpoint_000350/checkpoint-350'
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_1757d_00000_0_2021-11-13_09-57-20/checkpoint_000350/checkpoint-350'
         ppo_agent.load(path)
         ppo_agent.test()
     else:

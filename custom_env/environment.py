@@ -332,7 +332,7 @@ class QueueingNetwork3(QueueingNetwork2):
                 # Belief as observation, the scheduler thinks how many packages are in the queue.
                 self.observation_spaces[scheduler.name] = gym.spaces.Box(
                     low=float('-inf'), high=float('inf'),
-                    shape=(scenario.obs_servers, self.max_q_len + 1 + 1), dtype=np.float32)
+                    shape=(scenario.obs_servers, self.max_q_len + 1), dtype=np.float32)
 
         # Not every scenario has the comm_group.
         try:
@@ -345,10 +345,12 @@ class QueueingNetwork3(QueueingNetwork2):
 
         if not self.training:
             try:
+                # todo: use self.model_name to load parameters.
                 # Must use absolute path, otherwise the other atctors except main actor can't find model parameters.
-                self.model.load_state_dict(torch.load(
-                    '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/model_states/belief_encoder10_4167_59.95.pth')[
-                                               'state_dict'])
+                self.model.load_state_dict(torch.load('/content/drive/MyDrive/Data Science/pythonProject/masterthesis/model_states/belief_encoder10_4167_59.95.pth')['state_dict'])
+                # self.model.load_state_dict(torch.load(
+                #     './model_states/belief_encoder10_4167_59.95.pth')[
+                #                                'state_dict'])
             except FileNotFoundError:
                 print('No existed trained model, using initial parameters.')
 
@@ -374,7 +376,7 @@ class QueueingNetwork4(QueueingNetwork3):
         with torch.no_grad():
             recon_obs, mu, logvar = self.model(self.p, obs)
 
-        return (obs, recon_obs), self.rewards, self.dones, self.infos
+        return (obs, recon_obs, mu), self.rewards, self.dones, self.infos
 
 
 class QueueingNetwork5(QueueingNetwork3):
@@ -396,16 +398,18 @@ class QueueingNetwork5(QueueingNetwork3):
 
         if self.training:
             self.model.train()
-            self.p = {scheduler: 1 for scheduler in self.schedulers}
             # Joint distribution
-            recon_obs, mu, logvar = self.model(self.p, obs)
+            recon_obs, mu, logvar = self.model({scheduler: 1 for scheduler in self.schedulers}, obs)
             # Single distribution
             recon_obs0, mu0, logvar0 = self.model({scheduler: 0 for scheduler in self.schedulers}, obs)
+            # partial distribution
+            recon_obs1, mu1, logvar1 = self.model(self.p, obs)
         else:
             self.model.eval()
             with torch.no_grad():
                 recon_obs, mu, logvar = self.model(self.p, obs)
                 recon_obs0, mu0, logvar0 = self.model({scheduler: 0 for scheduler in self.schedulers}, obs)
+            recon_obs1, mu1, logvar1 = None, None, None
 
         recon_obss = []
         for x in recon_obs:
@@ -420,7 +424,7 @@ class QueueingNetwork5(QueueingNetwork3):
             else:
                 recon_obss0.append(torch.cat([y.argmax().unsqueeze(0) for y in x], dim=0))
 
-        return ((obs, recon_obs, mu, logvar, recon_obss, recon_obs0, mu0, logvar0, recon_obss0, real_obs),
+        return ((obs, recon_obs, mu, logvar, recon_obss, recon_obs0, mu0, logvar0, recon_obss0, real_obs, recon_obs1, mu1, logvar1),
                 self.rewards, self.dones, self.infos)
 
 
@@ -496,10 +500,8 @@ class RLlibEnv(MultiAgentEnv):
         infos = {k: {'done': dones[k]} for k in self.schedulers}
         # Agents can communicate
         if self.has_encoder:
-            belief = {scheduler: torch.cat(obss[1][env.index_map[scheduler]], dim=0).cpu().numpy()
-                      for scheduler in self.schedulers}
-            new_obs = {k: np.concatenate((v, np.array(obss[0][env.index_map[k]]).reshape(obs_servers, 1)), axis=1)
-                       for k, v in belief.items()}
+            new_obs = {scheduler: softmax(torch.cat(obss[2][env.index_map[scheduler]], dim=0).cpu().numpy(), axis=1)
+                       for scheduler in self.schedulers}
         else:
             new_obs = {k: v[0] for k, v in obss.items()}
         # ('real_obs:', {k: v[1] for k, v in obss.items()})

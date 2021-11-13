@@ -1,21 +1,24 @@
 """https://github.com/minqi/learning-to-communicate-pytorch
 This file is used to train belief models."""
-import json
-
 import gym
+import numpy as np
+from ray.tune.registry import register_env
+from scipy.special import softmax
 from tensorboardX import SummaryWriter
 import torch
 import torch.optim as optim
 
+from custom_env.environment import RLlibEnv
+from rllib_ppo import RLlibAgent
 from utils import DotDic
-import custom_env
 
 
 class Arena:
     """Arena class is used to train the MVAE model."""
-    def __init__(self, opt, env):
+    def __init__(self, opt, env, policy):
         self.opt = opt
         self.env = env
+        self.policy = policy
         self.buffer = []
         self.buffer_size = opt.buffer_size
         self.episode = DotDic({})
@@ -47,6 +50,11 @@ class Arena:
         record.logvar0 = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)]
                           for _ in range(n_schdulers)]
         record.recon_obs0 = [torch.zeros(opt.bs, n_servers, opt.queue_max_len+1) for _ in range(n_schdulers)]
+
+        record.mu1 = [[torch.zeros(opt.bs, opt.queue_max_len+1) for _ in range(n_servers)] for _ in range(n_schdulers)]
+        record.logvar1 = [[torch.zeros(opt.bs, opt.queue_max_len + 1) for _ in range(n_servers)]
+                          for _ in range(n_schdulers)]
+        record.recon_obs1 = [torch.zeros(opt.bs, n_servers, opt.queue_max_len + 1) for _ in range(n_schdulers)]
 
         return record
 
@@ -82,7 +90,6 @@ class Arena:
         self.writer.close()
 
     def test(self):
-        opt = self.opt
         for e in range(1):
             self.run_episode(True)
             # Delete the episode after training.
@@ -98,29 +105,35 @@ class Arena:
         dones = {'__all__': False}
         while not dones['__all__']:
             self.episode.step_records.append(self.create_step_record())
-            # Random policy
-            actions = {scheduler: action_space.sample() for scheduler, action_space in env.action_spaces.items()}
+            try:
+                belief = [softmax(torch.cat(obs, dim=0).cpu().detach().numpy(), axis=1) for obs in obss[2]]
+                obss = {scheduler: obs for scheduler, obs in zip(env.schedulers, belief)}
+            except KeyError:
+                pass
+
+            actions = self.policy.agent.compute_actions(obss, policy_id='shared')
 
             obss, r, dones, info = env.step(actions)
             if show:
-                print('timestep:', step+1)
+                pass
+                # print('timestep:', step+1)
                 # print('state:', env.state())
-                print('obs:', obss[0])
+                # print('obs:', obss[0])
                 # print('re_obs', obss[1])
                 # belief = {scheduler: torch.cat(obss[1][i], dim=0).cpu().numpy() for i, scheduler in enumerate(self.env.schedulers)}
                 # print({k: np.concatenate((v, np.array(obss[0][i]).reshape(5, 1)), axis=1)for i, (k, v) in enumerate(belief.items())})
                 # print('mu', obss[2])
                 # print('logvar', obss[3])
-                print('re_obss', obss[4])
+                # print('re_obss', obss[4])
                 # print('re_obs0', obss[5])
                 # print('mu0', obss[6])
                 # print('logvar0', obss[7])
-                print('re_obss0', obss[8])
-                print('real_obs', obss[9])
+                # print('re_obss0', obss[8])
+                # print('real_obs', obss[9])
                 # print('rewards:', r)
                 # print('dones:', dones)
                 # # print('messages:', info)
-                print('_' * 80)
+                # print('_' * 80)
             for b in range(opt.bs):
                 for i in range(opt.n_schedulers):
                     self.episode.step_records[step].obs[i][b, :] = obss[0][i]
@@ -132,6 +145,10 @@ class Arena:
                         self.episode.step_records[step].recon_obs0[i][b, j, :] = obss[5][i][j]
                         self.episode.step_records[step].mu0[i][j][b, :] = obss[6][i][j]
                         self.episode.step_records[step].logvar0[i][j][b, :] = obss[7][i][j]
+
+                        self.episode.step_records[step].recon_obs1[i][b, j, :] = obss[10][i][j]
+                        self.episode.step_records[step].mu1[i][j][b, :] = obss[11][i][j]
+                        self.episode.step_records[step].logvar1[i][j][b, :] = obss[12][i][j]
                 self.episode.steps[b] = step
 
             # Update step
@@ -158,6 +175,11 @@ class Arena:
                                          episode.step_records[step].obs,
                                          episode.step_records[step].mu0,
                                          episode.step_records[step].logvar0,
+                                         annealing_factor=annealing_factor)
+            total_loss += self.elbo_loss(episode.step_records[step].recon_obs1,
+                                         episode.step_records[step].obs,
+                                         episode.step_records[step].mu1,
+                                         episode.step_records[step].logvar1,
                                          annealing_factor=annealing_factor)
         return total_loss / self.n_models
 
@@ -211,12 +233,53 @@ class Arena:
 
 
 if __name__ == '__main__':
-    with open('config/PartialAccess.json', 'r') as f:
-        config = DotDic(json.loads(f.read()))
-    config.belief_training = True
-    config.has_encoder = True
-    env = gym.make(id="main_network-v0", conf=config)
-    arena = Arena(config, env)
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-model_name', type=str, default=None,
+                        help="gives the belief model's name [default: None]")
+    parser.add_argument('-experiment_name', type=str, default=None,
+                        help="gives this experiment's name [default: None]")
+    parser.add_argument('--silent', action='store_true', default=False,
+                        help='defines if scheduler can communicate [default: False]')
+    parser.add_argument('--use_belief', action='store_true', default=False,
+                        help='encodes observations to belief [default: False]')
+    parser.add_argument('--test', action='store_true', default=False,
+                        help='decide test model or train model [default: False]')
+    parser.add_argument('--cuda', action='store_true', default=False,
+                        help='enables CUDA training [default: False]')
+    args = parser.parse_args()
+    args.cuda = args.cuda and torch.cuda.is_available()
+
+    with open('./config/PartialAccess.json', 'r') as f:
+        conf = json.loads(f.read())
+
+    conf['use_belief'] = args.use_belief
+    conf['silent'] = args.silent
+    # todo: no use for test.
+    conf['experiment_name'] = args.experiment_name
+    conf['belief_training'] = not args.test
+    if args.use_belief:
+        assert args.model_name is not None, 'If use belief model, the model name must be given.'
+        conf['model_name'] = args.model_name
+
+    conf['num_workers'] = 0
+    conf['num_envs_per_worker'] = 1
+
+    # Create test environment.
+    env = RLlibEnv(DotDic(conf))
+    # Register env
+    register_env(conf['env_name'], lambda _: RLlibEnv(DotDic(conf)))
+    ppo_agent = RLlibAgent(conf, env)
+
+    path = None
+    # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c762f_00000_0_2021-11-10_23-49-01/checkpoint_000350/checkpoint-350'
+    # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_1757d_00000_0_2021-11-13_09-57-20/checkpoint_000350/checkpoint-350'
+    ppo_agent.load(path)
+    env = gym.make(id="main_network-v0", conf=DotDic(conf))
+    arena = Arena(DotDic(conf), env, ppo_agent)
     # arena.test()
     arena.train()
+    ppo_agent.shutdown()
 
