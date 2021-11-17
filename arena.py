@@ -1,7 +1,6 @@
 """https://github.com/minqi/learning-to-communicate-pytorch
 This file is used to train belief models."""
 import gym
-import numpy as np
 from ray.tune.registry import register_env
 from scipy.special import softmax
 from tensorboardX import SummaryWriter
@@ -115,25 +114,24 @@ class Arena:
 
             obss, r, dones, info = env.step(actions)
             if show:
-                pass
-                # print('timestep:', step+1)
+                print('timestep:', step+1)
                 # print('state:', env.state())
-                # print('obs:', obss[0])
+                print('obs:', obss[0])
                 # print('re_obs', obss[1])
                 # belief = {scheduler: torch.cat(obss[1][i], dim=0).cpu().numpy() for i, scheduler in enumerate(self.env.schedulers)}
                 # print({k: np.concatenate((v, np.array(obss[0][i]).reshape(5, 1)), axis=1)for i, (k, v) in enumerate(belief.items())})
-                # print('mu', obss[2])
-                # print('logvar', obss[3])
-                # print('re_obss', obss[4])
+                print('mu', obss[2])
+                print('logvar', obss[3])
+                print('re_obss', obss[4])
                 # print('re_obs0', obss[5])
                 # print('mu0', obss[6])
                 # print('logvar0', obss[7])
                 # print('re_obss0', obss[8])
-                # print('real_obs', obss[9])
-                # print('rewards:', r)
+                print('real_obs', obss[9])
+                print('rewards:', r)
                 # print('dones:', dones)
                 # # print('messages:', info)
-                # print('_' * 80)
+                print('_' * 80)
             for b in range(opt.bs):
                 for i in range(opt.n_schedulers):
                     self.episode.step_records[step].obs[i][b, :] = obss[0][i]
@@ -249,6 +247,8 @@ if __name__ == '__main__':
                         help='decide test model or train model [default: False]')
     parser.add_argument('--cuda', action='store_true', default=False,
                         help='enables CUDA training [default: False]')
+    parser.add_argument('--restore', action='store_true', default=False,
+                        help='Store the model from previous parameters [default: False]')
     args = parser.parse_args()
     args.cuda = args.cuda and torch.cuda.is_available()
 
@@ -258,6 +258,7 @@ if __name__ == '__main__':
     conf['use_belief'] = args.use_belief
     conf['silent'] = args.silent
     # todo: no use for test.
+    conf['restore'] = args.restore
     conf['experiment_name'] = args.experiment_name
     conf['belief_training'] = not args.test
     if args.use_belief:
@@ -273,9 +274,10 @@ if __name__ == '__main__':
     register_env(conf['env_name'], lambda _: RLlibEnv(DotDic(conf)))
     ppo_agent = RLlibAgent(conf, env)
 
-    path = None
-    # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c762f_00000_0_2021-11-10_23-49-01/checkpoint_000350/checkpoint-350'
+    # path = None
+    # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_e22d5_00000_0_2021-11-13_22-34-37/checkpoint_000350/checkpoint-350'
     # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_1757d_00000_0_2021-11-13_09-57-20/checkpoint_000350/checkpoint-350'
+    path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_7690b_00000_0_2021-11-16_16-44-27/checkpoint_000050/checkpoint-50'
     ppo_agent.load(path)
     env = gym.make(id="main_network-v0", conf=DotDic(conf))
     arena = Arena(DotDic(conf), env, ppo_agent)

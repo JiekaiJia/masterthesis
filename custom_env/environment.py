@@ -216,6 +216,7 @@ class QueueingNetwork2(BasicNetwork):
     def __init__(self, scenario):
         super().__init__(scenario)
         self.frequency = scenario.frequency
+        self.comm_act_dim = scenario.conf.comm_act_dim
 
         self.max_q_len = max([server.queue_max_len for server in scenario.servers])
 
@@ -227,12 +228,11 @@ class QueueingNetwork2(BasicNetwork):
         for scheduler in scenario.schedulers:
             name = scheduler.name
             # Action space is the action distribution + communication probability.
-            # todo: actions don't respect to box bound， Ray-1.8
             if self.silent:
                 self.action_spaces[name] = gym.spaces.Box(low=0, high=1, shape=(action_dim,),
                                                           dtype=np.float32)
             else:
-                self.action_spaces[name] = gym.spaces.Box(low=0, high=1, shape=(action_dim + 1,),
+                self.action_spaces[name] = gym.spaces.Box(low=0, high=1, shape=(action_dim + self.comm_act_dim,),
                                                           dtype=np.float32)
             # observe queue's length.
             self.observation_spaces[name] = gym.spaces.Box(
@@ -250,7 +250,11 @@ class QueueingNetwork2(BasicNetwork):
             scheduler = self.scenario.schedulers[self.index_map[name]]
             scheduler.action.a = softmax(self.current_actions[name])
             try:
-                self.p[name] = sigmoid(self.p[name])
+                tmp = sigmoid(self.p[name])
+                if len(tmp) > 1:
+                    self.p[name] = tmp
+                else:
+                    self.p[name] = [tmp[0] for _ in range(self.observation_spaces[name].shape[0])]
             except KeyError:
                 pass
 
@@ -300,10 +304,11 @@ class QueueingNetwork2(BasicNetwork):
                     self.current_actions[scheduler] = action
             else:
                 for scheduler, action in actions.items():
-                    self.current_actions[scheduler] = action[:-1]
-                    self.p[scheduler] = action[-1]
+                    self.current_actions[scheduler] = action[:self.scenario.dim_a]
+                    self.p[scheduler] = action[self.scenario.dim_a:]
 
             self._action_trans()
+            # print('p', self.p)
             self._execute_step()
 
         for server in self.scenario.servers:
@@ -323,6 +328,7 @@ class QueueingNetwork3(QueueingNetwork2):
     def __init__(self, scenario):
         super().__init__(scenario)
         self.training = scenario.conf.belief_training
+        self.restore = scenario.conf.restore
         self.bs = scenario.conf.bs
         self.model_name = scenario.conf.model_name
 
@@ -343,11 +349,12 @@ class QueueingNetwork3(QueueingNetwork2):
         self.model = MVAE(self.max_q_len + 1, len(self.schedulers), self.max_q_len + 1,
                           scenario.obs_servers, scenario.schedulers, self.training, self.bs, self.comm_group)
 
-        if not self.training:
+        if not self.training or self.restore:
             try:
                 # todo: use self.model_name to load parameters.
                 # Must use absolute path, otherwise the other atctors except main actor can't find model parameters.
-                self.model.load_state_dict(torch.load('/content/drive/MyDrive/Data Science/pythonProject/masterthesis/model_states/belief_encoder10_4167_59.95.pth')['state_dict'])
+                self.model.load_state_dict(torch.load('/content/drive/MyDrive/Data Science/pythonProject/masterthesis/model_states/belief_encoder10_112_150.52.pth')['state_dict'])
+                print('The model restores from the trained model.')
                 # self.model.load_state_dict(torch.load(
                 #     './model_states/belief_encoder10_4167_59.95.pth')[
                 #                                'state_dict'])
@@ -399,16 +406,16 @@ class QueueingNetwork5(QueueingNetwork3):
         if self.training:
             self.model.train()
             # Joint distribution
-            recon_obs, mu, logvar = self.model({scheduler: 1 for scheduler in self.schedulers}, obs)
+            recon_obs, mu, logvar = self.model({scheduler: [1]*5 for scheduler in self.schedulers}, obs)
             # Single distribution
-            recon_obs0, mu0, logvar0 = self.model({scheduler: 0 for scheduler in self.schedulers}, obs)
+            recon_obs0, mu0, logvar0 = self.model({scheduler: [0]*5 for scheduler in self.schedulers}, obs)
             # partial distribution
             recon_obs1, mu1, logvar1 = self.model(self.p, obs)
         else:
             self.model.eval()
             with torch.no_grad():
                 recon_obs, mu, logvar = self.model(self.p, obs)
-                recon_obs0, mu0, logvar0 = self.model({scheduler: 0 for scheduler in self.schedulers}, obs)
+                recon_obs0, mu0, logvar0 = self.model({scheduler: [0]*5 for scheduler in self.schedulers}, obs)
             recon_obs1, mu1, logvar1 = None, None, None
 
         recon_obss = []
@@ -500,7 +507,7 @@ class RLlibEnv(MultiAgentEnv):
         infos = {k: {'done': dones[k]} for k in self.schedulers}
         # Agents can communicate
         if self.has_encoder:
-            new_obs = {scheduler: softmax(torch.cat(obss[2][env.index_map[scheduler]], dim=0).cpu().numpy(), axis=1)
+            new_obs = {scheduler: torch.cat(obss[2][env.index_map[scheduler]], dim=0).cpu().numpy()
                        for scheduler in self.schedulers}
         else:
             new_obs = {k: v[0] for k, v in obss.items()}

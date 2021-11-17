@@ -137,10 +137,10 @@ class MVAE(nn.Module):
                 mu, logvar = prior_expert((1, batch_size, self.n_latents), use_cuda=use_cuda)
                 mu = torch.cat((mu, mus[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
                 logvar = torch.cat((logvar, logvars[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
-                if not scheduler.silent and p[scheduler.name] > 0.5:
+                if not scheduler.silent and p[scheduler.name][k] > 0.5:
                     server = scheduler.obs_servers[k]
                     for member in group:
-                        if mus[_index_map[member]] is None:
+                        if mus[_index_map[member]] is None or p[member.name][k] > 0.5:
                             continue
                         idx = member.obs_servers.index(server)
                         mu = torch.cat((mu, mus[_index_map[member]][idx].unsqueeze(0)), dim=0)

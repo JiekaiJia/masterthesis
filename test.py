@@ -1,11 +1,18 @@
 import json
 import time
 
+import numpy as np
+import scipy.stats as st
 import tqdm
 
 from custom_env.environment import MainEnv
-from utils import DotDic
+from logger import get_logger
 import policies
+from utils import DotDic
+
+
+logger = get_logger(__name__, 'policy_test.log')
+
 
 if __name__ == '__main__':
     import argparse
@@ -23,26 +30,27 @@ if __name__ == '__main__':
     config.use_belief = False
     config.silent = True
     mean_episode_rewards, mean_episode_length, total_drp_pkg_rate = [], [], []
+    std_episode_rewards, std_episode_length, std_drp_pkg_rate = [], [], []
     # act_frequencies = args.act_frequency
-    act_frequencies = range(1)
+    act_frequencies = range(6)
     for act_frequency in act_frequencies:
+        episode_rewards, episode_length, episode_drp_pkg_rate = [], [], []
         config.act_frequency = act_frequency
         # Initialize Environment
         env = MainEnv(config)
         # Initialize Policy
         policy = policies.RandomPolicy(config, env)
-        print(f'{policy.__class__.__name__} start running!!')
-        acc_r, steps = 0, 0
-        num_e = 1
-        drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
+        logger.info(f'{policy.__class__.__name__} start running!!')
+        num_e = 120
         for _ in tqdm.tqdm(range(num_e)):
             obss = env.reset()
             real_obss = obss
-            step = 0
+            acc_r, step = 0, 0
             dones = {'__all__': False}
+            drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
             while not dones['__all__']:
                 # print('timestep:', step + 1)
-                actions = {scheduler: policy.get_gactions(obs) for scheduler, obs in obss.items()}
+                actions = {scheduler: policy.compute_gactions(obs) for scheduler, obs in real_obss.items()}
                 obss, r, dones, info = env.step(actions)
                 _obss = obss
                 obss = {scheduler: obs[0] for scheduler, obs in _obss.items()}
@@ -56,25 +64,24 @@ if __name__ == '__main__':
                 # print(env.acc_drop_pkgs)
                 # print('_' * 80)
                 step += 1
-            if env.acc_drop_pkgs[env.schedulers[0]] == 60:
-                break
             for k, v in env.acc_drop_pkgs.items():
                 drop_pkg[k] += v
-            steps += step
+            episode_length.append(step)
+            episode_rewards.append(acc_r)
+            episode_drp_pkg_rate.append(sum(drop_pkg.values())/(len(drop_pkg)*config.n_packages))
         end = time.time()
-        drp_pkg_rate = {k: round(v / (num_e * config.n_packages), 2) for k, v in drop_pkg.items()}
-        mean_episode_length.append(round(steps/num_e, 2))
-        mean_episode_rewards.append(round(acc_r/num_e, 2))
-        total_drp_pkg_rate.append(round(sum(drp_pkg_rate.values())/len(drp_pkg_rate.values()), 2))
+        mean_r = np.mean(episode_rewards)
+        mean_p = np.mean(episode_drp_pkg_rate)
+        mean_episode_rewards.append(mean_r)
+        std_episode_rewards.append(st.t.interval(0.95, len(episode_rewards)-1, loc=mean_r, scale=st.sem(episode_rewards)))
+        total_drp_pkg_rate.append(mean_p)
+        std_drp_pkg_rate.append(st.t.interval(0.95, len(episode_drp_pkg_rate)-1, loc=mean_p, scale=st.sem(episode_drp_pkg_rate)))
         print(f'act_frequency: {act_frequency}')
-        print(f'mean episode rewards: {mean_episode_rewards[-1]}')
-        print(f'mean episode length: {mean_episode_length[-1]}')
-        print('mean dropped packages rate:', drp_pkg_rate)
-        print('total mean dropped packages rate:', total_drp_pkg_rate[-1])
+        print(f'mean episode rewards: {mean_episode_rewards[-1]}, std episode rewards: {std_episode_rewards[-1]}')
+        print(f'total mean dropped packages rate: {total_drp_pkg_rate[-1]}, std_drp_pkg_rate: {std_drp_pkg_rate[-1]}')
         print(f'Runtime: {end-start}S')
 
     print('Summary:')
-    print('act_frequency', tuple([i for i in act_frequencies]))
-    print('mean_episode_length', tuple(mean_episode_length))
-    print('mean_episode_rewards', tuple(mean_episode_rewards))
-    print('total_drp_pkg_rate', tuple(total_drp_pkg_rate))
+    logger.info(f'act_frequency{tuple([i for i in act_frequencies])}')
+    logger.info(f'mean_episode_rewards: {tuple(mean_episode_rewards)}, std episode rewards: {tuple(std_episode_rewards)}')
+    logger.info(f'total_drp_pkg_rate: {tuple(total_drp_pkg_rate)}, std_drp_pkg_rate: {tuple(std_drp_pkg_rate)}')

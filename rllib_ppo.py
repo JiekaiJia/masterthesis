@@ -1,35 +1,18 @@
 from copy import deepcopy
-import logging
-import sys
 
+import numpy as np
 import ray
 from ray.rllib.agents.registry import get_trainer_class
 from ray.tune.registry import register_env
+import scipy.stats as st
 import torch
+import tqdm
 
 from custom_env.environment import RLlibEnv
-from utils import DotDic
+from logger import get_logger
+from utils import DotDic, sigmoid
 
-
-# Create a logger.
-logger = logging.getLogger(__name__)
-# Setting logging level to debug
-logger.setLevel(logging.DEBUG)
-# Setting logging format
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-# Create a stream handler
-handler1 = logging.StreamHandler(sys.stdout)
-handler1.setLevel(logging.DEBUG)
-# Create a file handler
-handler2 = logging.FileHandler('PPO_belief_data.log')
-handler2.setLevel(logging.DEBUG)
-
-handler1.setFormatter(formatter)
-handler2.setFormatter(formatter)
-
-# 为日志器logger添加上面创建的处理器handler
-logger.addHandler(handler1)
-logger.addHandler(handler2)
+logger = get_logger(__name__, 'PPO_belief_data.log')
 
 
 class RLlibAgent:
@@ -74,6 +57,7 @@ class RLlibAgent:
             # 'lstm_use_prev_action': True,
             # 'lstm_use_prev_reward': True,
         }
+        # config["lr"] =  5e-6
 
         # === Environment Settings ===
         config['env'] = conf['env_name']
@@ -117,7 +101,8 @@ class RLlibAgent:
             checkpoint_at_end=True,
             local_dir=conf['local_dir'],
             checkpoint_freq=conf['checkpoint_freq'],
-            # restore='/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_76e74_00000_0_2021-11-10_18-17-29/checkpoint_000150/checkpoint-150'
+            resume = True
+            # restore='/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_e22d5_00000_0_2021-11-13_22-34-37/checkpoint_000350/checkpoint-350'
         )
         return analysis
     
@@ -142,36 +127,68 @@ class RLlibAgent:
 
     def test(self):
         """Test trained agent for a single episode. Return the episode reward"""
-        # instantiate env class
-        env = self.env
+        mean_episode_rewards, mean_episode_length, total_drp_pkg_rate, mean_comm_count = [], [], [], []
+        std_episode_rewards, std_episode_length, std_drp_pkg_rate, std_comm_count = [], [], [], []
+        # act_frequencies = args.act_frequency
+        act_frequencies = range(6)
+        for act_frequency in act_frequencies:
+            episode_rewards, episode_length, episode_drp_pkg_rate, episode_comm_count = [], [], [], []
+            self.conf['act_frequency'] = act_frequency
+            # instantiate env class
+            env = RLlibEnv(DotDic(self.conf))
+            # run until episode ends
+            num_e = 120
+            for _ in tqdm.tqdm(range(num_e)):
+                obss = env.reset()
+                episode_reward, step, comm_count = 0, 0, 0
+                dones = {'__all__': False}
+                drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
+                while not dones['__all__']:
+                    step += 1
+                    # logger.info(f'timestep: {step}')
+                    actions = self.agent.compute_actions(obss, policy_id='shared')
+                    for k, a in actions.items():
+                        p = sigmoid(a[self.conf['obs_servers']:])
+                        for _p in p:
+                            if _p > 0.5:
+                                comm_count += 1
+                    obss, rewards, dones, infos = env.step(actions)
+                    # logger.info(f'obs: {obss}')
+                    # logger.info(f'reward: {reward}')
+                    # logger.info('-'*40)
+                    for k, v in rewards.items():
+                        episode_reward += v
+                for k, v in env.acc_drop_pkgs.items():
+                    drop_pkg[k] += v
+                episode_length.append(step)
+                episode_rewards.append(episode_reward)
+                episode_comm_count.append(comm_count/(self.conf['n_schedulers']*self.conf['comm_act_dim']*step))
+                episode_drp_pkg_rate.append(sum(drop_pkg.values()) / (len(drop_pkg) * self.conf['n_packages']))
+            mean_r = np.mean(episode_rewards)
+            mean_p = np.mean(episode_drp_pkg_rate)
+            mean_c = np.mean(episode_comm_count)
+            mean_comm_count.append(mean_c)
+            std_comm_count.append(
+                st.t.interval(0.95, len(episode_comm_count) - 1, loc=mean_c, scale=st.sem(episode_comm_count))
+            )
+            mean_episode_rewards.append(mean_r)
+            std_episode_rewards.append(
+                st.t.interval(0.95, len(episode_rewards) - 1, loc=mean_r, scale=st.sem(episode_rewards)))
+            total_drp_pkg_rate.append(mean_p)
+            std_drp_pkg_rate.append(
+                st.t.interval(0.95, len(episode_drp_pkg_rate) - 1, loc=mean_p, scale=st.sem(episode_drp_pkg_rate)))
+            print(f'act_frequency: {act_frequency}')
+            print(f'mean episode rewards: {mean_episode_rewards[-1]}, std episode rewards: {std_episode_rewards[-1]}')
+            print(f'communication rate: {mean_comm_count[-1]}')
+            print(
+                f'total mean dropped packages rate: {total_drp_pkg_rate[-1]}, std_drp_pkg_rate: {std_drp_pkg_rate[-1]}')
 
-        # run until episode ends
-        episode_reward, steps = 0, 0
-        drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
-        num_e = 120
-        for _ in range(num_e):
-            step = 0
-            done = {'__all__': False}
-            obs = env.reset()
-            while not done['__all__']:
-                step += 1
-                # logger.info(f'timestep: {step}')
-                actions = self.agent.compute_actions(obs, policy_id='shared')
-                # logger.info(f'actions: {actions}')
-                obs, reward, done, info = env.step(actions)
-                # logger.info(f'obs: {obs}')
-                # logger.info(f'reward: {reward}')
-                # logger.info('-'*40)
-                for k, v in reward.items():
-                    episode_reward += v
-            for k, v in env.acc_drop_pkgs.items():
-                drop_pkg[k] += v
-            steps += step 
-        print(f'mean episode rewards: {episode_reward/num_e:.2f}')
-        print(f'mean episode length: {steps/num_e:.2f}')
-        print('mean dropped packages rate:', {k: round(v / (num_e * self.conf['n_packages']), 2) for k, v in drop_pkg.items()})
-
-        return episode_reward
+        print('Summary:')
+        logger.info(f'act_frequency{tuple([i for i in act_frequencies])}')
+        logger.info(
+            f'mean_episode_rewards: {tuple(mean_episode_rewards)}, std episode rewards: {tuple(std_episode_rewards)}')
+        logger.info(f'total_drp_pkg_rate: {tuple(total_drp_pkg_rate)}, std_drp_pkg_rate: {tuple(std_drp_pkg_rate)}')
+        logger.info(f'communication rate: {mean_comm_count}, std_comm_rate: {std_comm_count}')
 
     def shutdown(self):
         ray.shutdown()
@@ -224,14 +241,10 @@ if __name__ == '__main__':
     if args.test:
         # analysis = ppo_agent.load_exp_results(f'./ray_results/{conf["experiment_name"]}')
         # path = ppo_agent.get_checkpoints_path(analysis)
-        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_12944_00000_0_2021-11-09_02-02-20/checkpoint_000300/checkpoint-300'
-        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_38f7a_00000_0_2021-10-31_16-25-55/checkpoint_000350/checkpoint-350'
-        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_7a832_00000_0_2021-11-09_09-29-03/checkpoint_000150/checkpoint-150'
         path = None
         # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_bda74_00000_0_2021-11-12_23-10-35/checkpoint_000350/checkpoint-350'
-        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_76e74_00000_0_2021-11-10_18-17-29/checkpoint_000150/checkpoint-150'
-        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_c762f_00000_0_2021-11-10_23-49-01/checkpoint_000350/checkpoint-350'
-        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_1757d_00000_0_2021-11-13_09-57-20/checkpoint_000350/checkpoint-350'
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_671d9_00000_0_2021-11-14_21-47-03/checkpoint_000700/checkpoint-700'
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_7690b_00000_0_2021-11-16_16-44-27/checkpoint_000200/checkpoint-200'
         ppo_agent.load(path)
         ppo_agent.test()
     else:
