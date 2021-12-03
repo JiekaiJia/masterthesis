@@ -8,7 +8,6 @@ class Agent:
     def __init__(self, agent_id):
         # Starting from 1,2,3,4,...
         self.id = agent_id
-        self.c_noise = None
         self.name = ''
         self.queue = []
 
@@ -26,15 +25,13 @@ class Agent:
 
 
 class Scheduler(Agent):
-    """Scheduler actions: 0 --> don't send packages
+    """Scheduler actions:
                           1 --> send to server 1
                           2 --> send to server 2
     """
     def __init__(self, agent_id):
         super().__init__(agent_id)
-        self.silent = True
         self.action = Action()
-        self.msg = [0]
         self.pkg_count = 0
         # A list of server objects.
         self.obs_servers = []
@@ -49,7 +46,6 @@ class Scheduler(Agent):
 
     def reset(self):
         super().reset()
-        self.msg = [0]
 
     def receive(self, package):
         self.queue.append(package)

@@ -2,17 +2,25 @@ from copy import deepcopy
 
 import numpy as np
 import ray
-from ray.rllib.agents.registry import get_trainer_class
+from ray import tune
 from ray.tune.registry import register_env
+from ray.rllib.models import ModelCatalog
+from ray.rllib.agents.registry import get_trainer_class
 import scipy.stats as st
 import torch
 import tqdm
+from ray.tune.logger import pretty_print, DEFAULT_LOGGERS, TBXLogger
 
-from custom_env.environment import RLlibEnv
+# from ray.tune.integration.wandb import WandbLogger
+
+from custom_env.environment import SuperAgentEnv
+from RLlib_custom_models import SimpleModel
 from logger import get_logger
+from multi_trainer import MultiPPOTrainer
+from multi_action_distribution import TorchHomogeneousMultiActionDistribution
 from utils import DotDic, sigmoid
 
-logger = get_logger(__name__, 'PPO_belief_data.log')
+logger = get_logger(__name__, 'PPO_DIAL_data.log')
 
 
 class RLlibAgent:
@@ -47,41 +55,29 @@ class RLlibAgent:
         config['num_envs_per_worker'] = conf['num_envs_per_worker']
 
         # === Settings for the Trainer process ===
-        # Whether layers should be shared for the value function.
         config['model'] = {
-            'fcnet_hiddens': [64, 64],
-            'fcnet_activation': 'relu',
-            'vf_share_layers': True,
-            # 'use_lstm': True,
-            # 'max_seq_len': 40,
-            # 'lstm_use_prev_action': True,
-            # 'lstm_use_prev_reward': True,
+                "custom_model": "model",
+                "custom_action_dist": "hom_multi_action",
+                "custom_model_config": {
+                    "encoder_out_features": 30,
+                    "shared_nn_out_features_per_agent": 30,
+                    "value_state_encoder_cnn_out_features": 64,
+                    "share_observations": False,
+                },
         }
-        config["framework"] = "torch"
 
         # === Environment Settings ===
         config['env'] = conf['env_name']
         # the env_creator function via the register env lambda below.
         # config['env_config'] = {'max_cycles': max_cycles, 'num_agents': num_agents, 'local_ratio': local_ratio}
+        config["framework"] = "torch"
 
         # # === Debug Settings ===
         # # Periodically print out summaries of relevant internal dataflow(DEBUG, INFO, WARN, or ERROR.)
-        config['log_level'] = 'WARN'
+        config['log_level'] = 'INFO'
         config['no_done_at_end'] = True
 
-        # === Settings for Multi-Agent Environments ===
-        # Configuration for multi-agent setup with policy sharing:
-        config['multiagent'] = {
-            # Map of type MultiAgentPolicyConfigDict from policy ids to tuples
-            # of (policy_cls, obs_space, act_space, config). This defines the
-            # observation and action spaces of the policies and any extra config.
-            'policies': {
-                'shared': (None, env.observation_spaces[agent], env.action_spaces[agent], {}) for agent in
-                env.schedulers
-            },
-            # Function mapping agent ids to policy ids.
-            'policy_mapping_fn': lambda agent_id: 'shared',
-        }
+
         return config
 
     def train(self):
@@ -94,24 +90,28 @@ class RLlibAgent:
         """
         # Train
         analysis = ray.tune.run(
-            self.conf['alg_name'],
+            MultiPPOTrainer,
             stop=self.stop_criteria,
+            keep_checkpoints_num=1,
+            checkpoint_score_attr='max-episode_reward_mean',
             config=self.set_config(),
             name=self.conf['experiment_name'],
             checkpoint_at_end=True,
             local_dir=conf['local_dir'],
             checkpoint_freq=conf['checkpoint_freq'],
-            resume=True
+            # resume=True
             # restore='/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_e22d5_00000_0_2021-11-13_22-34-37/checkpoint_000350/checkpoint-350'
         )
         return analysis
-    
+
     def load_exp_results(self, path):
         analysis = ray.tune.Analysis(path)
         return analysis
 
     def get_checkpoints_path(self, analysis):
-        checkpoint_path = analysis.get_best_checkpoint(trial=analysis.get_best_logdir(metric='episode_reward_mean', mode='max'), metric='episode_reward_mean', mode='max')
+        checkpoint_path = analysis.get_best_checkpoint(
+            trial=analysis.get_best_logdir(metric='episode_reward_mean', mode='max'), metric='episode_reward_mean',
+            mode='max')
         return checkpoint_path
 
     def load(self, path):
@@ -135,7 +135,7 @@ class RLlibAgent:
             episode_rewards, episode_length, episode_drp_pkg_rate, episode_comm_count = [], [], [], []
             self.conf['act_frequency'] = act_frequency
             # instantiate env class
-            env = RLlibEnv(DotDic(self.conf))
+            env = SuperAgentEnv(DotDic(self.conf))
             # run until episode ends
             num_e = 120
             for _ in tqdm.tqdm(range(num_e)):
@@ -147,7 +147,6 @@ class RLlibAgent:
                     step += 1
                     # logger.info(f'timestep: {step}')
                     actions = self.agent.compute_actions(obss, policy_id='shared')
-                    logger.info(f'actions: {actions}')
                     for k, a in actions.items():
                         p = sigmoid(a[self.conf['obs_servers']:])
                         for _p in p:
@@ -163,7 +162,7 @@ class RLlibAgent:
                     drop_pkg[k] += v
                 episode_length.append(step)
                 episode_rewards.append(episode_reward)
-                episode_comm_count.append(comm_count/(self.conf['n_schedulers']*self.conf['comm_act_dim']*step))
+                episode_comm_count.append(comm_count / (self.conf['n_schedulers'] * self.conf['comm_act_dim'] * step))
                 episode_drp_pkg_rate.append(sum(drop_pkg.values()) / (len(drop_pkg) * self.conf['n_packages']))
             mean_r = np.mean(episode_rewards)
             mean_p = np.mean(episode_drp_pkg_rate)
@@ -217,7 +216,7 @@ if __name__ == '__main__':
 
     with open('./config/PartialAccess.json', 'r') as f:
         conf = json.loads(f.read())
-    
+
     conf['use_belief'] = args.use_belief
     conf['silent'] = args.silent
     conf['experiment_name'] = args.experiment_name
@@ -234,17 +233,25 @@ if __name__ == '__main__':
         conf['num_envs_per_worker'] = 10
 
     # Create test environment.
-    env = RLlibEnv(DotDic(conf))
+    env = SuperAgentEnv(DotDic(conf))
     # Register env
-    register_env(conf['env_name'], lambda _: RLlibEnv(DotDic(conf)))
+    register_env(conf['env_name'], lambda _: SuperAgentEnv(DotDic(conf)))
+    ModelCatalog.register_custom_model("model", SimpleModel)
+    ModelCatalog.register_custom_action_dist(
+        "hom_multi_action", TorchHomogeneousMultiActionDistribution
+    )
     ppo_agent = RLlibAgent(conf, env)
 
     if args.test:
         # analysis = ppo_agent.load_exp_results(f'./ray_results/{conf["experiment_name"]}')
         # path = ppo_agent.get_checkpoints_path(analysis)
         path = None
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_bda74_00000_0_2021-11-12_23-10-35/checkpoint_000350/checkpoint-350'
+        path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_671d9_00000_0_2021-11-14_21-47-03/checkpoint_000700/checkpoint-700'
+        # path = '/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_7690b_00000_0_2021-11-16_16-44-27/checkpoint_000350//checkpoint-350'
         ppo_agent.load(path)
         ppo_agent.test()
     else:
         ppo_agent.train()
     ppo_agent.shutdown()
+

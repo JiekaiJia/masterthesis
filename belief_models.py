@@ -4,164 +4,170 @@ import torch
 import torch.nn as nn
 
 
-class GRUtrigger(nn.Module):
+# class MVAE(nn.Module):
+#     """Multimodal Variational Autoencoder.
+#     @param n_latents: integer
+#                       number of latent dimensions
+#     """
+#
+#     def __init__(self, n_latents, n_modalities, n_embeddings, obs_len, schedulers, training, batch_size, comm_group):
+#         super().__init__()
+#         self.n_modalities = n_modalities
+#         self.schedulers = schedulers
+#         self.training = training
+#         self.bs = batch_size
+#         self.comm_group = comm_group
+#         # Each agent has encoders ang decoders for each observing queue.
+#         self.belief_encoders = nn.ModuleList(
+#             [nn.ModuleList([AgentEncoder(n_latents, n_embeddings) for _ in range(obs_len)]) for _ in range(n_modalities)]
+#         )
+#         self.belief_decoders = nn.ModuleList(
+#             [nn.ModuleList([AgentDecoder(n_latents) for _ in range(obs_len)]) for _ in range(n_modalities)]
+#         )
+#         self.experts = ProductOfExperts()
+#         self.n_latents = n_latents
+#
+#     def reparametrize(self, mu, logvar):
+#         if self.training:
+#             std = logvar.mul(0.5).exp_()
+#             eps = std.data.new(std.size()).normal_()
+#             # return torch.clamp(eps.mul(std).add_(mu), 0)
+#             # return F.softmax(eps.mul(std).add_(mu), dim=1)
+#             return eps.mul(std).add_(mu)
+#         else:  # return mean during inference
+#             # return torch.clamp(mu, 0)
+#             # return F.softmax(mu, dim=1)
+#             return mu
+#
+#     def forward(self, p, obs):
+#         """Forward pass through the MVAE.
+#         @param obs: list of ?PyTorch.Tensors: NxL,
+#                       where N is the number of schedulers and L is the length of observations.
+#                       If a single belief is missing, pass None
+#                       instead of a Tensor. Regardless if all beliefs
+#                       are missing, still pass a list of <n_modalities> None's.
+#         @param p: dict
+#                       Probability, which decide whether to get the messages.
+#         @return obs_recons: list of PyTorch.Tensors (n_modalities length)
+#         """
+#         mu, logvar = self.infer(p, obs)
+#         obs_recons = []
+#         # reparametrization trick to sample
+#         for i, (_mu, _logvar) in enumerate(zip(mu, logvar)):
+#             if _mu is None:
+#                 obs_recons.append(None)
+#                 continue
+#             z = [self.reparametrize(__mu, __logvar) for __mu, __logvar in zip(_mu, _logvar)]
+#             obs_recon = []
+#             for j, _z in enumerate(z):
+#                 obs_recon.append(self.belief_decoders[i][j](_z))
+#             obs_recons.append(obs_recon)
+#         return obs_recons, mu, logvar
+#
+#     def infer(self, p, obs):
+#         # get the batch size
+#         batch_size = self.bs
+#
+#         use_cuda = next(self.parameters()).is_cuda  # check if CUDA
+#
+#         # Compute the distributions of all the schedulers.
+#         mus = []
+#         logvars = []
+#         for i, encoders in enumerate(self.belief_encoders):
+#             if obs[i] is None:
+#                 mus.append(None)
+#                 logvars.append(None)
+#                 continue
+#             _mus = []
+#             _logvars = []
+#             _input = obs[i].long()
+#             for j, encoder in enumerate(encoders):
+#                 belief_mu, belief_logvar = encoder(_input[j].unsqueeze(0))
+#                 _mus.append(belief_mu)
+#                 _logvars.append(belief_logvar)
+#             mus.append(_mus)
+#             logvars.append(_logvars)
+#         _index_map = {scheduler: i for i, scheduler in enumerate(self.schedulers)}
+#
+#         f_mu, f_logvar = [], []
+#         # Each scheduler has a communication group, in which the agents share the same partial access.
+#         for scheduler in self.schedulers:
+#             # If the scheduler is done, then skip this scheduler.
+#             if mus[_index_map[scheduler]] is None:
+#                 f_mu.append(None)
+#                 f_logvar.append(None)
+#                 continue
+#             comm_group = self.comm_group[scheduler]
+#             _f_mu, _f_logvar = [], []
+#             # Each queue has a group of schedulers, which can access to it.
+#             for k, group in enumerate(comm_group):
+#                 mu, logvar = prior_expert((1, batch_size, self.n_latents), use_cuda=use_cuda)
+#                 mu = torch.cat((mu, mus[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
+#                 logvar = torch.cat((logvar, logvars[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
+#                 if not scheduler.silent and p[scheduler.name][k] > 0.5:
+#                     server = scheduler.obs_servers[k]
+#                     for member in group:
+#                         if mus[_index_map[member]] is None or p[member.name][k] > 0.5:
+#                             continue
+#                         idx = member.obs_servers.index(server)
+#                         mu = torch.cat((mu, mus[_index_map[member]][idx].unsqueeze(0)), dim=0)
+#                         logvar = torch.cat((logvar, logvars[_index_map[member]][idx].unsqueeze(0)), dim=0)
+#                 # product of experts to combine gaussians
+#                 mu, logvar = self.experts(mu, logvar)
+#                 _f_mu.append(mu)
+#                 _f_logvar.append(logvar)
+#             f_mu.append(_f_mu)
+#             f_logvar.append(_f_logvar)
+#         return f_mu, f_logvar
+#
+#     def show_grad(self):
+#         print('encoder')
+#         for name, weight in self.belief_encoders[0][0].named_parameters():
+#             if weight.requires_grad:
+#                 print(name, '_weight_grad', weight.grad.mean(), weight.grad.min(), weight.grad.max())
+#         print('decoder')
+#         for name, weight in self.belief_decoders[0][0].named_parameters():
+#             if weight.requires_grad:
+#                 (name, '_weight_grad', weight.grad.mean(), weight.grad.min(), weight.grad.max())
 
-    def __init__(self, obs_size, embedding_dim, hidden_dim, layer_dim, output_dim):
-        """
-        @param obs_size: observation length
-        @param embedding_dim: length of embedding vector
-        @param hidden_dim: Number of GRU's neuron
-        @param layer_dim: Number of GRU's layer
-        @param output_dim: length of output
-        """
-        super().__init__()
-        # embedding
-        self.embedding = nn.Embedding(obs_size, embedding_dim)
-        # GRU
-        self.gru = nn.GRU(embedding_dim, hidden_dim, layer_dim, batch_first=True)
-        self.fc1 = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Dropout(0.5),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
 
-    def forward(self, x):
-        # x : [bacth, time_step, vocab_size]
-        embeds = self.embedding(x)
-        # embeds : [batch, time_step, embedding_dim]
-        r_out, h_n = self.gru(embeds, None)
-        # r_out : [batch, time_step, hidden_dim]
-        out = self.fc1(r_out[:, -1, :])
-        # out : [batch, time_step, output_dim]
-        return out
-
-
-class MVAE(nn.Module):
-    """Multimodal Variational Autoencoder.
+class VAE(nn.Module):
+    """Variational Autoencoder.
     @param n_latents: integer
                       number of latent dimensions
     """
 
-    def __init__(self, n_latents, n_modalities, n_embeddings, obs_len, schedulers, training, batch_size, comm_group):
+    def __init__(self, n_latents, obs_len, queue_len, hidden_dim, training=True):
         super().__init__()
-        self.n_modalities = n_modalities
-        self.schedulers = schedulers
+        self.obs_len = obs_len
         self.training = training
-        self.bs = batch_size
-        self.comm_group = comm_group
-        # Each agent has encoders ang decoders for each observing queue.
-        self.belief_encoders = nn.ModuleList(
-            [nn.ModuleList([AgentEncoder(n_latents, n_embeddings) for _ in range(obs_len)]) for _ in range(n_modalities)]
-        )
-        self.belief_decoders = nn.ModuleList(
-            [nn.ModuleList([AgentDecoder(n_latents) for _ in range(obs_len)]) for _ in range(n_modalities)]
-        )
-        self.experts = ProductOfExperts()
         self.n_latents = n_latents
+        # All agents share one encoder and decoder.
+        self.belief_encoder = AgentEncoder(n_latents=n_latents, num_embeddings=queue_len+1, hidden_dim=hidden_dim)
+        self.belief_decoder = AgentDecoder(n_latents=n_latents, num_embeddings=queue_len+1, hidden_dim=hidden_dim)
 
-    def reparametrize(self, mu, logvar):
-        if self.training:
-            std = logvar.mul(0.5).exp_()
-            eps = std.data.new(std.size()).normal_()
-            # return torch.clamp(eps.mul(std).add_(mu), 0)
-            # return F.softmax(eps.mul(std).add_(mu), dim=1)
-            return eps.mul(std).add_(mu)
-        else:  # return mean during inference
-            # return torch.clamp(mu, 0)
-            # return F.softmax(mu, dim=1)
-            return mu
-
-    def forward(self, p, obs):
-        """Forward pass through the MVAE.
-        @param obs: list of ?PyTorch.Tensors: NxL,
-                      where N is the number of schedulers and L is the length of observations.
-                      If a single belief is missing, pass None
-                      instead of a Tensor. Regardless if all beliefs
-                      are missing, still pass a list of <n_modalities> None's.
-        @param p: dict
-                      Probability, which decide whether to get the messages.
-        @return obs_recons: list of PyTorch.Tensors (n_modalities length)
-        """
-        mu, logvar = self.infer(p, obs)
-        obs_recons = []
-        # reparametrization trick to sample
-        for i, (_mu, _logvar) in enumerate(zip(mu, logvar)):
-            if _mu is None:
-                obs_recons.append(None)
-                continue
-            z = [self.reparametrize(__mu, __logvar) for __mu, __logvar in zip(_mu, _logvar)]
-            obs_recon = []
-            for j, _z in enumerate(z):
-                obs_recon.append(self.belief_decoders[i][j](_z))
-            obs_recons.append(obs_recon)
-        return obs_recons, mu, logvar
-
-    def infer(self, p, obs):
-        # get the batch size
-        batch_size = self.bs
-
-        use_cuda = next(self.parameters()).is_cuda  # check if CUDA
-
-        # Compute the distributions of all the schedulers.
-        mus = []
-        logvars = []
-        for i, encoders in enumerate(self.belief_encoders):
-            if obs[i] is None:
-                mus.append(None)
-                logvars.append(None)
-                continue
-            _mus = []
-            _logvars = []
-            _input = obs[i].long()
-            for j, encoder in enumerate(encoders):
-                belief_mu, belief_logvar = encoder(_input[j].unsqueeze(0))
-                _mus.append(belief_mu)
-                _logvars.append(belief_logvar)
-            mus.append(_mus)
-            logvars.append(_logvars)
-        _index_map = {scheduler: i for i, scheduler in enumerate(self.schedulers)}
-
-        f_mu, f_logvar = [], []
-        # Each scheduler has a communication group, in which the agents share the same partial access.
-        for scheduler in self.schedulers:
-            # If the scheduler is done, then skip this scheduler.
-            if mus[_index_map[scheduler]] is None:
-                f_mu.append(None)
-                f_logvar.append(None)
-                continue
-            comm_group = self.comm_group[scheduler]
-            _f_mu, _f_logvar = [], []
-            # Each queue has a group of schedulers, which can access to it.
-            for k, group in enumerate(comm_group):
-                mu, logvar = prior_expert((1, batch_size, self.n_latents), use_cuda=use_cuda)
-                mu = torch.cat((mu, mus[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
-                logvar = torch.cat((logvar, logvars[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
-                if not scheduler.silent and p[scheduler.name][k] > 0.5:
-                    server = scheduler.obs_servers[k]
-                    for member in group:
-                        if mus[_index_map[member]] is None or p[member.name][k] > 0.5:
-                            continue
-                        idx = member.obs_servers.index(server)
-                        mu = torch.cat((mu, mus[_index_map[member]][idx].unsqueeze(0)), dim=0)
-                        logvar = torch.cat((logvar, logvars[_index_map[member]][idx].unsqueeze(0)), dim=0)
-                # product of experts to combine gaussians
-                mu, logvar = self.experts(mu, logvar)
-                _f_mu.append(mu)
-                _f_logvar.append(logvar)
-            f_mu.append(_f_mu)
-            f_logvar.append(_f_logvar)
-        return f_mu, f_logvar
-
-    def show_grad(self):
-        print('encoder')
-        for name, weight in self.belief_encoders[0][0].named_parameters():
-            if weight.requires_grad:
-                print(name, '_weight_grad', weight.grad.mean(), weight.grad.min(), weight.grad.max())
-        print('decoder')
-        for name, weight in self.belief_decoders[0][0].named_parameters():
-            if weight.requires_grad:
-                print(name, '_weight_grad', weight.grad.mean(), weight.grad.min(), weight.grad.max())
+    def forward(self, obs):
+        obs_recons, mus, logvars = [], [], []
+        obs_app, mus_app, logvars_app = obs_recons.append, mus.append, logvars.append
+        for o in obs:
+            if o is None:
+                mu, logvar, obs_recon = None, None, None
+            else:
+                _obs_recons, _mus, _logvars = [], [], []
+                _obs_app, _mus_app, _logvars_app = _obs_recons.append, _mus.append, _logvars.append
+                for i in range(self.obs_len):
+                    _mu, _logvar = self.belief_encoder(o[i])
+                    _z = reparametrize(_mu, _logvar, self.training)
+                    _obs_app(self.belief_decoder(_z))
+                    _mus_app(_mu)
+                    _logvars_app(_logvar)
+                mu = torch.cat(_mus, dim=1)
+                logvar = torch.cat(_logvars, dim=1)
+                obs_recon = torch.cat(_obs_recons, dim=1)
+            obs_app(obs_recon)
+            mus_app(mu)
+            logvars_app(logvar)
+        return obs_recons, mus, logvars
 
 
 class AgentEncoder(nn.Module):
@@ -172,19 +178,23 @@ class AgentEncoder(nn.Module):
                       number of latent variable dimensions.
     """
 
-    def __init__(self, n_latents, n_embeddings):
-        super(AgentEncoder, self).__init__()
-        self.net = nn.Sequential(
-            nn.Embedding(n_embeddings, 128),
-            Swish(),
-            nn.Linear(128, 128),
-            Swish(),
-            nn.Linear(128, n_latents * 2))
+    def __init__(self, n_latents, num_embeddings, hidden_dim):
+        super().__init__()
         self.n_latents = n_latents
+
+        self.net = nn.Sequential(
+            nn.Embedding(num_embeddings, hidden_dim),
+            Swish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            Swish(),
+            nn.Linear(hidden_dim, n_latents * 2))
+
+        self.net.apply(init_weights)
 
     def forward(self, x):
         n_latents = self.n_latents
         x = self.net(x.long())
+        x = x.view((-1, 2*n_latents))
         return x[:, :n_latents], x[:, n_latents:]
 
 
@@ -196,20 +206,22 @@ class AgentDecoder(nn.Module):
                       number of latent variable dimensions.
     """
 
-    def __init__(self, n_latents):
-        super(AgentDecoder, self).__init__()
+    def __init__(self, n_latents, num_embeddings, hidden_dim):
+        super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_latents, 128),
+            nn.Linear(n_latents, hidden_dim),
             Swish(),
-            nn.Linear(128, 128),
+            nn.Linear(hidden_dim, hidden_dim),
             Swish(),
-            nn.Linear(128, 128),
+            nn.Linear(hidden_dim, hidden_dim),
             Swish(),
-            nn.Linear(128, n_latents))
+            nn.Linear(hidden_dim, num_embeddings))
+
+        self.net.apply(init_weights)
 
     def forward(self, z):
         z = self.net(z)
-        return z  # NOTE: no sigmoid here. See train.py
+        return z
 
 
 class ProductOfExperts(nn.Module):
@@ -251,7 +263,16 @@ def prior_expert(size, use_cuda=False):
     return mu, logvar
 
 
-if __name__ == '__main__':
-    from torchsummary import summary
-    model = GRUtrigger(obs_size=5, embedding_dim=128, hidden_dim=128, layer_dim=2, output_dim=5)
-    summary(model, input_size=(5,), batch_size=-1)
+def init_weights(layer):
+    if type(layer) == nn.Linear:
+        nn.init.xavier_uniform_(layer.weight)
+
+
+def reparametrize(mu, logvar, training=True):
+    if training:
+        std = logvar.mul(0.5).exp_()
+        eps = std.data.new(std.size()).normal_()
+        return eps.mul(std).add_(mu)
+    else:  # return mean during inference
+        return mu
+
