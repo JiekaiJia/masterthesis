@@ -1,13 +1,24 @@
+import numpy as np
 from ray.rllib.models.modelv2 import ModelV2, restore_original_dimensions
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
+from ray.rllib.models.preprocessors import get_preprocessor
 from ray.rllib.models.torch.misc import (
     normc_initializer,
     SlimFC,
 )
 from ray.rllib.utils.annotations import override
+from ray.rllib.models.torch.recurrent_net import RecurrentNetwork as TorchRNN
 from ray.rllib.utils import try_import_torch
 
-from belief_models import AgentEncoder, AgentDecoder, reparametrize
+from model_components import (
+    MessageEncoder,
+    MessageDecoder,
+    reparametrize,
+    RNNEncoder,
+    LinearLayers,
+    prior_expert,
+    ProductOfExperts
+)
 
 torch, nn = try_import_torch()
 
@@ -288,164 +299,196 @@ torch, nn = try_import_torch()
 
 
 class SuperObsModel(TorchModelV2, nn.Module):
-    def __init__(
-        self,
-        obs_space,
-        action_space,
-        num_outputs,
-        model_config,
-        name,
-        n_latents,
-        belief_hidden_dim,
-        hidden_dim,
-    ):
-        TorchModelV2.__init__(
-            self, obs_space, action_space, num_outputs, model_config, name
-        )
+    def __init__(self,
+                 obs_space,
+                 action_space,
+                 num_outputs,
+                 model_config,
+                 name,
+                 n_latents,
+                 hidden_dim):
         nn.Module.__init__(self)
-        self.n_agents = 10
+        super().__init__(obs_space, action_space, num_outputs, model_config,
+                         name)
+
+        self.n_latents = n_latents
         self.obs_space = obs_space.original_space
         obs_shape = self.obs_space['self'].shape
-        ###########
-        # action encoder
-        self.encoder = AgentEncoder(n_latents=n_latents, num_embeddings=self.obs_space['self'].high[0]+1,
-                                    hidden_dim=belief_hidden_dim)
-        self.decoder = AgentDecoder(n_latents=n_latents, num_embeddings=self.obs_space['self'].high[0]+1,
-                                    hidden_dim=belief_hidden_dim)
-        ###########
-        # NN main body
-        self.shared = nn.Sequential(
-            SlimFC(in_size=n_latents*obs_shape[0],
+        encoding_dim = hidden_dim * 2
+        # observation encoder
+        self.obs_encoder = nn.Sequential(
+            SlimFC(in_size=obs_shape[0],
                    out_size=hidden_dim,
                    initializer=normc_initializer(1.0),
-                   activation_fn='tanh'),
+                   activation_fn='relu'),
             SlimFC(in_size=hidden_dim,
                    out_size=hidden_dim,
                    initializer=normc_initializer(1.0),
-                   activation_fn='tanh'),
+                   activation_fn='relu'),
             SlimFC(in_size=hidden_dim,
-                   out_size=hidden_dim,
+                   out_size=encoding_dim,
                    initializer=normc_initializer(1.0),
-                   activation_fn='tanh'),
+                   activation_fn='relu'),
         )
-        ###########
-        # Action NN head
-        action_post_logits = [
+        # message distribution
+        self.msg_dist = nn.Sequential(
+            SlimFC(in_size=encoding_dim,
+                   out_size=hidden_dim,
+                   initializer=normc_initializer(1.0),
+                   activation_fn='relu'),
+            SlimFC(in_size=hidden_dim,
+                   out_size=hidden_dim,
+                   initializer=normc_initializer(1.0),
+                   activation_fn='relu'),
+            SlimFC(in_size=hidden_dim,
+                   out_size=2 * n_latents,
+                   initializer=normc_initializer(1.0),
+                   activation_fn=None),
+        )
+        # communication method
+        self.PoE = ProductOfExperts()
+        # NN main body
+        self.hidden_layers = LinearLayers(input_dim=(n_latents+encoding_dim), hidden_dim=hidden_dim)
+        self.action_branch = nn.Sequential(
             SlimFC(in_size=hidden_dim,
                    out_size=num_outputs,
                    initializer=normc_initializer(0.01),
-                   activation_fn=None),
-        ]
-        self.action_output = nn.Sequential(*action_post_logits)
-        ###########
-        # Value NN head
-        value_post_logits = [
+                   activation_fn=None))
+        self.value_branch = nn.Sequential(
             SlimFC(in_size=hidden_dim,
                    out_size=1,
                    initializer=normc_initializer(0.01),
-                   activation_fn=None),
-        ]
-        self.value_output = nn.Sequential(*value_post_logits)
-
-    @override(ModelV2)
-    def forward(self, input_dict, state, seq_lens):
-        obs = restore_original_dimensions(input_dict["obs"], self.obs_space, "torch")
-        batch_size = obs['self'].shape[0]
-        device = obs['self'].device
-
-        # action_feature_map = torch.zeros(
-        #     batch_size, self.n_agents, self.encoder_out_features
-        # ).to(device)
-        # value_feature_map = torch.zeros(
-        #     batch_size, self.n_agents, self.encoder_out_features
-        # ).to(device)
-        # action_feature_map[:, 0] = self.action_encoder(input_dict["obs"]['self'].float())
-        # value_feature_map[:, 0] = self.value_encoder(input_dict["obs"]['self'].float())
-        # input_others = input_dict["obs"]['others']
-        # for i, other in enumerate(input_others):
-        #     action_feature_map[:, i + 1] = self.action_encoder(other.float())
-        #     value_feature_map[:, i + 1] = self.value_encoder(other.float())
-        #
-        # action_shared_features = self.action_shared(
-        #     action_feature_map.view(batch_size, self.n_agents * self.encoder_out_features)
-        # )
-        # value_shared_features = self.value_shared(
-        #     action_feature_map.view(batch_size, self.n_agents * self.encoder_out_features)
-        # )
-        _zs, _obs_recons, _mus, _logvars = [], [], [], []
-        _zs_app, _obs_app, _mus_app, _logvars_app = _zs.append, _obs_recons.append, _mus.append, _logvars.append
-        for i in range(obs['self'].shape[1]):
-            _mu, _logvar = self.encoder(obs['self'][:, i])
-            _z = reparametrize(_mu, _logvar, self.training)
-            # _obs_app(self.decoder(_z))
-            _zs_app(_z)
-            # _mus_app(_mu)
-            # _logvars_app(_logvar)
-        z = torch.cat(_zs, dim=1)
-        # mu = torch.cat(_mus, dim=1)
-        # logvar = torch.cat(_logvars, dim=1)
-        # obs_recon = torch.cat(_obs_recons, dim=1)
-        shared_features = self.shared(torch.sigmoid(z))
-        outputs = self.action_output(shared_features)
-        values = self.value_output(shared_features).squeeze(1)
-
-        self._cur_value = values
-
-        return outputs, state
+                   activation_fn=None))
+        # Holds the current "base" output (before logits layer).
+        self._features = None
 
     @override(ModelV2)
     def value_function(self):
-        assert self._cur_value is not None, "must call forward() first"
-        return self._cur_value
+        assert self._features is not None, "must call forward() first"
+        return torch.reshape(self.value_branch(self._features), [-1])
 
-    # @override(ModelV2)
-    # def custom_loss(self, policy_loss, loss_inputs):
-    #     """Calculates a custom loss on top of the given policy_loss(es).
-    #     Args:
-    #         policy_loss (List[TensorType]): The list of already calculated
-    #             policy losses (as many as there are optimizers).
-    #         loss_inputs (TensorStruct): Struct of np.ndarrays holding the
-    #             entire train batch.
-    #     Returns:
-    #         List[TensorType]: The altered list of policy losses. In case the
-    #             custom loss should have its own optimizer, make sure the
-    #             returned list is one larger than the incoming policy_loss list.
-    #             In case you simply want to mix in the custom loss into the
-    #             already calculated policy losses, return a list of altered
-    #             policy losses (as done in this example below).
-    #     """
-    #     # Get the next batch from our input files.
-    #     batch = self.reader.next()
-    #
-    #     # Define a secondary loss by building a graph copy with weight sharing.
-    #     obs = restore_original_dimensions(
-    #         torch.from_numpy(batch["obs"]).float().to(policy_loss[0].device),
-    #         self.obs_space,
-    #         tensorlib="torch")
-    #     logits, _ = self.forward({"obs": obs}, [], None)
-    #
-    #     # You can also add self-supervised losses easily by referencing tensors
-    #     # created during _build_layers_v2(). For example, an autoencoder-style
-    #     # loss can be added as follows:
-    #     # ae_loss = squared_diff(
-    #     #     loss_inputs["obs"], Decoder(self.fcnet.last_layer))
-    #     print("FYI: You can also use these tensors: {}, ".format(loss_inputs))
-    #
-    #     # Compute the IL loss.
-    #     action_dist = TorchCategorical(logits, self.model_config)
-    #     imitation_loss = torch.mean(-action_dist.logp(
-    #         torch.from_numpy(batch["actions"]).to(policy_loss[0].device)))
-    #     self.imitation_loss_metric = imitation_loss.item()
-    #     self.policy_loss_metric = np.mean(
-    #         [loss.item() for loss in policy_loss])
-    #
-    #     # Add the imitation loss to each already calculated policy loss term.
-    #     # Alternatively (if custom loss has its own optimizer):
-    #     # return policy_loss + [10 * self.imitation_loss]
-    #     return [loss_ + 10 * imitation_loss for loss_ in policy_loss]
-    #
-    # def metrics(self):
-    #     return {
-    #         "policy_loss": self.policy_loss_metric,
-    #         "imitation_loss": self.imitation_loss_metric,
-    #     }
+    @override(ModelV2)
+    def forward(self, input_dict, state, seq_lens):
+        obs = input_dict['obs']
+        device = obs['self'].device
+        shape = obs['self'].shape
+
+        # obs = restore_original_dimensions(input_dict['obs'], self.obs_space, "torch")
+        # self observation encoding
+        me = self.obs_encoder(obs['self'])
+        # others' messages encoding and concat.
+        mu, logvar = prior_expert((shape[0], 1, self.n_latents))
+        others_obs = torch.cat([o.unsqueeze(2).permute(0, 2, 1) for o in obs['others']], dim=1)
+        obs_encoding = self.obs_encoder(others_obs)
+        m_dist = self.msg_dist(obs_encoding)
+        self.m_mu = m_dist[:, :, :self.n_latents]
+        self.m_logvar = m_dist[:, :, self.n_latents:]
+        mus = torch.cat((mu, self.m_mu), dim=1)
+        logvars = torch.cat((logvar, self.m_logvar), dim=1)
+        msg_mu, msg_logvar = self.PoE(mus, logvars, dim=1)
+        msg_z = reparametrize(msg_mu, msg_logvar)
+        total = torch.cat((me, msg_z), dim=1)
+        self._features = self.hidden_layers(total)
+        action_out = self.action_branch(self._features)
+        return action_out, state
+
+
+class SuperObsRNNModel(TorchRNN, nn.Module):
+    def __init__(self,
+                 obs_space,
+                 action_space,
+                 num_outputs,
+                 model_config,
+                 name,
+                 n_latents,
+                 hidden_dim):
+        nn.Module.__init__(self)
+        super().__init__(obs_space, action_space, num_outputs, model_config,
+                         name)
+
+        self.obs_space = obs_space.original_space
+        obs_shape = self.obs_space['self'].shape
+        self.gru_state_size = n_latents * obs_shape[0]
+        # observation encoder
+        self.fc1 = nn.Linear(obs_shape[0], hidden_dim)
+        self.gru = nn.GRU(hidden_dim, self.gru_state_size, batch_first=True)
+        # message distribution
+        self.msg_dist = nn.Sequential(
+            SlimFC(in_size=self.gru_state_size,
+                   out_size=hidden_dim,
+                   initializer=normc_initializer(1.0),
+                   activation_fn='relu'),
+            SlimFC(in_size=hidden_dim,
+                   out_size=hidden_dim,
+                   initializer=normc_initializer(1.0),
+                   activation_fn='relu'),
+            SlimFC(in_size=hidden_dim,
+                   out_size=2 * self.gru_state_size,
+                   initializer=normc_initializer(1.0),
+                   activation_fn=None),
+        )
+        # communication method
+        self.PoE = ProductOfExperts()
+        # NN main body
+        self.hidden_layers = LinearLayers(input_dim=self.gru_state_size, hidden_dim=hidden_dim)
+        self.action_branch = nn.Sequential(
+            SlimFC(in_size=hidden_dim,
+                   out_size=num_outputs,
+                   initializer=normc_initializer(0.01),
+                   activation_fn=None))
+        self.value_branch = nn.Sequential(
+            SlimFC(in_size=hidden_dim,
+                   out_size=1,
+                   initializer=normc_initializer(0.01),
+                   activation_fn=None))
+        # Holds the current "base" output (before logits layer).
+        self._features = None
+
+    @override(ModelV2)
+    def get_initial_state(self):
+        # Place hidden states on same device as model.
+        h = [self.fc1.weight.new(1, self.gru_state_size).zero_().squeeze(0)]*10
+        return h
+
+    @override(ModelV2)
+    def value_function(self):
+        assert self._features is not None, "must call forward() first"
+        return torch.reshape(self.value_branch(self._features), [-1])
+
+    @override(TorchRNN)
+    def forward_rnn(self, inputs, state, seq_lens):
+        """Feeds `inputs` (B x T x ..) through the Gru Unit.
+
+        Returns the resulting outputs as a sequence (B x T x ...).
+        Values are stored in self._cur_value in simple (B) shape (where B
+        contains both the B and T dims!).
+
+        Returns:
+            NN Outputs (B x T x ...) as sequence.
+            The state batches as a List of two items (c- and h-states).
+        """
+        device = inputs.device
+        shape = inputs.shape
+        obs = restore_original_dimensions(inputs, self.obs_space, "torch")
+        # self observation encoding
+        me = torch.relu(self.fc1(obs['self']))
+        gru_out_me, h_me = self.gru(me, torch.unsqueeze(state[0], 0))
+        # others' messages encoding and concat.
+        mu, logvar = prior_expert((shape[0], shape[1], self.gru_state_size, 1))
+        msg_mus, msg_logvars = [mu.to(device)], [logvar.to(device)]
+        states = [torch.squeeze(h_me, 0)]
+        states_app, msg_mu_app, msg_logvar_app = states.append, msg_mus.append, msg_logvars.append
+        for i, other in enumerate(obs['others']):
+            f = torch.relu(self.fc1(other))
+            gru_o, h_o = self.gru(f, torch.unsqueeze(state[i+1], 0))
+            dist = self.msg_dist(gru_o).unsqueeze(3)
+            msg_mu_app(dist[:, :, :self.gru_state_size, :])
+            msg_logvar_app(dist[:, :, self.gru_state_size:, :])
+            states_app(torch.squeeze(h_o, 0))
+        cat_mu = torch.cat(msg_mus, dim=-1)
+        cat_logvar = torch.cat(msg_logvars, dim=-1)
+        msg_mu, msg_logvar = self.PoE(cat_mu, cat_logvar)
+        msg_z = reparametrize(msg_mu, msg_logvar)
+        self._features = self.hidden_layers(0.5*msg_z+0.5*gru_out_me)
+        action_out = self.action_branch(self._features)
+        return action_out, states

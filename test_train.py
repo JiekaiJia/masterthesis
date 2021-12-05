@@ -10,7 +10,8 @@ import torch
 import tqdm
 
 from custom_env.environment import RLlibEnv, SuperObsEnv
-from RLlib_custom_models import SuperObsModel
+from custom_PPO import PPOTrainer
+from RLlib_custom_models import SuperObsModel, SuperObsRNNModel
 from logger import get_logger
 from utils import DotDic, sigmoid
 
@@ -54,7 +55,6 @@ class RLlibAgent:
             "custom_model": "model",
             "custom_model_config": {
                 "n_latents": cfg["n_latents"],
-                "belief_hidden_dim": cfg["belief_hidden_dim"],
                 "hidden_dim": cfg["PPO_hidden_dim"],
             },
         }
@@ -67,7 +67,7 @@ class RLlibAgent:
 
         # # === Debug Settings ===
         # # Periodically print out summaries of relevant internal dataflow(DEBUG, INFO, WARN, or ERROR.)
-        config["log_level"] = "INFO"
+        config["log_level"] = "WARN"
         config["no_done_at_end"] = True
 
         # === Settings for Multi-Agent Environments ===
@@ -95,7 +95,7 @@ class RLlibAgent:
         """
         # Train
         analysis = ray.tune.run(
-            self.cfg["alg_name"],
+            PPOTrainer,
             stop=self.stop_criteria,
             config=self.set_config(),
             name=self.cfg["experiment_name"],

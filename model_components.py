@@ -1,5 +1,9 @@
 """https://github.com/mhw32/multimodal-vae-public"""
 
+from ray.rllib.models.torch.misc import (
+    normc_initializer,
+    SlimFC,
+)
 import torch
 import torch.nn as nn
 
@@ -143,8 +147,8 @@ class VAE(nn.Module):
         self.training = training
         self.n_latents = n_latents
         # All agents share one encoder and decoder.
-        self.belief_encoder = AgentEncoder(n_latents=n_latents, num_embeddings=queue_len+1, hidden_dim=hidden_dim)
-        self.belief_decoder = AgentDecoder(n_latents=n_latents, num_embeddings=queue_len+1, hidden_dim=hidden_dim)
+        self.belief_encoder = MessageEncoder(n_latents=n_latents, num_embeddings=queue_len + 1, hidden_dim=hidden_dim)
+        self.belief_decoder = MessageDecoder(n_latents=n_latents, num_embeddings=queue_len + 1, hidden_dim=hidden_dim)
 
     def forward(self, obs):
         obs_recons, mus, logvars = [], [], []
@@ -170,7 +174,26 @@ class VAE(nn.Module):
         return obs_recons, mus, logvars
 
 
-class AgentEncoder(nn.Module):
+class RNNEncoder(nn.Module):
+    def __init__(self, input_shape, hidden_dim, rnn_state_dim):
+        super().__init__()
+        self.rnn_state_dim = rnn_state_dim
+
+        self.fc1 = nn.Linear(input_shape, hidden_dim)
+        self.rnn = nn.GRU(hidden_dim, rnn_state_dim, batch_first=True)
+
+    def init_hidden(self):
+        # make hidden states on same device as model
+        return self.fc1.weight.new(1, self.rnn_state_dim).zero_().squeeze(0)
+
+    def forward(self, inputs, hidden_state):
+        x = torch.relu(self.fc1(inputs))
+        h_in = hidden_state[0].unsqueeze(0)
+        output, h = self.rnn(x, h_in)
+        return output, h.squeeze(0)
+
+
+class MessageEncoder(nn.Module):
     """Parametrizes q(z|y).
     We use a single inference network that encodes
     a single attribute.
@@ -198,7 +221,7 @@ class AgentEncoder(nn.Module):
         return x[:, :n_latents], x[:, n_latents:]
 
 
-class AgentDecoder(nn.Module):
+class MessageDecoder(nn.Module):
     """Parametrizes p(y|z).
     We use a single generative network that decodes
     a single attribute.
@@ -224,6 +247,28 @@ class AgentDecoder(nn.Module):
         return z
 
 
+class LinearLayers(nn.Module):
+    def __init__(self, input_dim, hidden_dim):
+        super().__init__()
+        self.layers = nn.Sequential(
+            SlimFC(in_size=input_dim,
+                   out_size=hidden_dim,
+                   initializer=normc_initializer(1.0),
+                   activation_fn='relu'),
+            SlimFC(in_size=hidden_dim,
+                   out_size=hidden_dim,
+                   initializer=normc_initializer(1.0),
+                   activation_fn='relu'),
+            SlimFC(in_size=hidden_dim,
+                   out_size=hidden_dim,
+                   initializer=normc_initializer(1.0),
+                   activation_fn='relu'),
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+
+
 class ProductOfExperts(nn.Module):
     """Return parameters for product of independent experts.
     See https://arxiv.org/pdf/1410.7827.pdf for equations.
@@ -231,12 +276,12 @@ class ProductOfExperts(nn.Module):
     @param logvar: M x D for M experts
     """
 
-    def forward(self, mu, logvar, eps=1e-8):
+    def forward(self, mu, logvar, eps=1e-8, dim=-1):
         var = torch.exp(logvar) + eps
         # precision of i-th Gaussian expert at point x
         T = 1. / var
-        pd_mu = torch.sum(mu * T, dim=0) / torch.sum(T, dim=0)
-        pd_var = 1. / torch.sum(T, dim=0)
+        pd_mu = torch.sum(mu * T, dim=dim) / torch.sum(T, dim=dim)
+        pd_var = 1. / torch.sum(T, dim=dim)
         pd_logvar = torch.log(pd_var)
         return pd_mu, pd_logvar
 

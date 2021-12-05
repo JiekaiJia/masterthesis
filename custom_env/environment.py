@@ -9,7 +9,7 @@ from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from scipy.special import softmax
 import torch
 
-from belief_models import VAE
+from model_components import VAE
 from scenario import PartialAccessScenario
 from utils import sigmoid
 
