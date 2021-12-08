@@ -10,7 +10,7 @@ from ray.rllib.agents.ppo.ppo_tf_policy import setup_config
 from ray.rllib.agents.trainer_template import build_trainer
 from ray.rllib.evaluation.postprocessing import compute_gae_for_sample_batch, \
     Postprocessing
-from ray.rllib.models.modelv2 import ModelV2
+from ray.rllib.models.modelv2 import ModelV2, restore_original_dimensions
 from ray.rllib.models.torch.torch_action_dist import TorchDistributionWrapper
 from ray.rllib.policy.policy import Policy
 from ray.rllib.policy.policy_template import build_policy_class
@@ -100,15 +100,22 @@ def ppo_surrogate_loss(
     # Ignore the value function.
     else:
         vf_loss = mean_vf_loss = 0.0
-
-    kld_loss = 0.5 * torch.sum(1 + model.m_logvar - model.m_mu.pow(2) - model.m_logvar.exp(), dim=-1)
-    mean_kld_loss = torch.mean(kld_loss)
+  
+    # Auto encoder KL divergence
+    kld_loss = -0.5 * torch.sum(1 + model.m_logvar - model.m_mu.pow(2) - model.m_logvar.exp(), dim=-1)
+    mean_kld_loss = reduce_mean_valid(kld_loss)
+    # Auto encoder reconstruction loss
+    mean_reconstruct_loss = torch.zeros(1)
+    # obs = restore_original_dimensions(train_batch['obs'], model.obs_space, "torch")
+    # reconstruct_loss = model.reconstruct_loss(model.logits.permute(0, 2, 1), obs['self'].long())
+    # mean_reconstruct_loss = reduce_mean_valid(torch.sum(reconstruct_loss, dim=1))
 
     total_loss = reduce_mean_valid(-surrogate_loss +
                                    policy.kl_coeff * action_kl +
                                    policy.config["vf_loss_coeff"] * vf_loss -
                                    policy.entropy_coeff * curr_entropy +
-                                   1e-2 * mean_kld_loss)
+                                   1e-3 * mean_kld_loss + 
+                                   1e-3 * mean_reconstruct_loss)
 
     # Store values for stats function in model (tower), such that for
     # multi-GPU, we do not override them during the parallel loss phase.
@@ -120,6 +127,7 @@ def ppo_surrogate_loss(
     model.tower_stats["mean_entropy"] = mean_entropy
     model.tower_stats["mean_kl_loss"] = mean_kl_loss
     model.tower_stats["mean_msg_kl_loss"] = mean_kld_loss
+    model.tower_stats["mean_reconstruct_loss"] = mean_reconstruct_loss
 
     return total_loss
 
@@ -150,8 +158,11 @@ def kl_and_loss_stats(policy: Policy,
         "entropy": torch.mean(
             torch.stack(policy.get_tower_stats("mean_entropy"))),
         "entropy_coeff": policy.entropy_coeff,
-        "msg_kld": policy.get_tower_stats("mean_msg_kl_loss")
-    }
+        "msg_kld": torch.mean(
+            torch.stack(policy.get_tower_stats("mean_msg_kl_loss"))),
+        "msg_reconstruct_loss": torch.mean(
+            torch.stack(policy.get_tower_stats("mean_reconstruct_loss"))),
+            }
 
 
 def vf_preds_fetches(

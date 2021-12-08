@@ -8,133 +8,6 @@ import torch
 import torch.nn as nn
 
 
-# class MVAE(nn.Module):
-#     """Multimodal Variational Autoencoder.
-#     @param n_latents: integer
-#                       number of latent dimensions
-#     """
-#
-#     def __init__(self, n_latents, n_modalities, n_embeddings, obs_len, schedulers, training, batch_size, comm_group):
-#         super().__init__()
-#         self.n_modalities = n_modalities
-#         self.schedulers = schedulers
-#         self.training = training
-#         self.bs = batch_size
-#         self.comm_group = comm_group
-#         # Each agent has encoders ang decoders for each observing queue.
-#         self.belief_encoders = nn.ModuleList(
-#             [nn.ModuleList([AgentEncoder(n_latents, n_embeddings) for _ in range(obs_len)]) for _ in range(n_modalities)]
-#         )
-#         self.belief_decoders = nn.ModuleList(
-#             [nn.ModuleList([AgentDecoder(n_latents) for _ in range(obs_len)]) for _ in range(n_modalities)]
-#         )
-#         self.experts = ProductOfExperts()
-#         self.n_latents = n_latents
-#
-#     def reparametrize(self, mu, logvar):
-#         if self.training:
-#             std = logvar.mul(0.5).exp_()
-#             eps = std.data.new(std.size()).normal_()
-#             # return torch.clamp(eps.mul(std).add_(mu), 0)
-#             # return F.softmax(eps.mul(std).add_(mu), dim=1)
-#             return eps.mul(std).add_(mu)
-#         else:  # return mean during inference
-#             # return torch.clamp(mu, 0)
-#             # return F.softmax(mu, dim=1)
-#             return mu
-#
-#     def forward(self, p, obs):
-#         """Forward pass through the MVAE.
-#         @param obs: list of ?PyTorch.Tensors: NxL,
-#                       where N is the number of schedulers and L is the length of observations.
-#                       If a single belief is missing, pass None
-#                       instead of a Tensor. Regardless if all beliefs
-#                       are missing, still pass a list of <n_modalities> None's.
-#         @param p: dict
-#                       Probability, which decide whether to get the messages.
-#         @return obs_recons: list of PyTorch.Tensors (n_modalities length)
-#         """
-#         mu, logvar = self.infer(p, obs)
-#         obs_recons = []
-#         # reparametrization trick to sample
-#         for i, (_mu, _logvar) in enumerate(zip(mu, logvar)):
-#             if _mu is None:
-#                 obs_recons.append(None)
-#                 continue
-#             z = [self.reparametrize(__mu, __logvar) for __mu, __logvar in zip(_mu, _logvar)]
-#             obs_recon = []
-#             for j, _z in enumerate(z):
-#                 obs_recon.append(self.belief_decoders[i][j](_z))
-#             obs_recons.append(obs_recon)
-#         return obs_recons, mu, logvar
-#
-#     def infer(self, p, obs):
-#         # get the batch size
-#         batch_size = self.bs
-#
-#         use_cuda = next(self.parameters()).is_cuda  # check if CUDA
-#
-#         # Compute the distributions of all the schedulers.
-#         mus = []
-#         logvars = []
-#         for i, encoders in enumerate(self.belief_encoders):
-#             if obs[i] is None:
-#                 mus.append(None)
-#                 logvars.append(None)
-#                 continue
-#             _mus = []
-#             _logvars = []
-#             _input = obs[i].long()
-#             for j, encoder in enumerate(encoders):
-#                 belief_mu, belief_logvar = encoder(_input[j].unsqueeze(0))
-#                 _mus.append(belief_mu)
-#                 _logvars.append(belief_logvar)
-#             mus.append(_mus)
-#             logvars.append(_logvars)
-#         _index_map = {scheduler: i for i, scheduler in enumerate(self.schedulers)}
-#
-#         f_mu, f_logvar = [], []
-#         # Each scheduler has a communication group, in which the agents share the same partial access.
-#         for scheduler in self.schedulers:
-#             # If the scheduler is done, then skip this scheduler.
-#             if mus[_index_map[scheduler]] is None:
-#                 f_mu.append(None)
-#                 f_logvar.append(None)
-#                 continue
-#             comm_group = self.comm_group[scheduler]
-#             _f_mu, _f_logvar = [], []
-#             # Each queue has a group of schedulers, which can access to it.
-#             for k, group in enumerate(comm_group):
-#                 mu, logvar = prior_expert((1, batch_size, self.n_latents), use_cuda=use_cuda)
-#                 mu = torch.cat((mu, mus[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
-#                 logvar = torch.cat((logvar, logvars[_index_map[scheduler]][k].unsqueeze(0)), dim=0)
-#                 if not scheduler.silent and p[scheduler.name][k] > 0.5:
-#                     server = scheduler.obs_servers[k]
-#                     for member in group:
-#                         if mus[_index_map[member]] is None or p[member.name][k] > 0.5:
-#                             continue
-#                         idx = member.obs_servers.index(server)
-#                         mu = torch.cat((mu, mus[_index_map[member]][idx].unsqueeze(0)), dim=0)
-#                         logvar = torch.cat((logvar, logvars[_index_map[member]][idx].unsqueeze(0)), dim=0)
-#                 # product of experts to combine gaussians
-#                 mu, logvar = self.experts(mu, logvar)
-#                 _f_mu.append(mu)
-#                 _f_logvar.append(logvar)
-#             f_mu.append(_f_mu)
-#             f_logvar.append(_f_logvar)
-#         return f_mu, f_logvar
-#
-#     def show_grad(self):
-#         print('encoder')
-#         for name, weight in self.belief_encoders[0][0].named_parameters():
-#             if weight.requires_grad:
-#                 print(name, '_weight_grad', weight.grad.mean(), weight.grad.min(), weight.grad.max())
-#         print('decoder')
-#         for name, weight in self.belief_decoders[0][0].named_parameters():
-#             if weight.requires_grad:
-#                 (name, '_weight_grad', weight.grad.mean(), weight.grad.min(), weight.grad.max())
-
-
 class VAE(nn.Module):
     """Variational Autoencoder.
     @param n_latents: integer
@@ -174,25 +47,6 @@ class VAE(nn.Module):
         return obs_recons, mus, logvars
 
 
-class RNNEncoder(nn.Module):
-    def __init__(self, input_shape, hidden_dim, rnn_state_dim):
-        super().__init__()
-        self.rnn_state_dim = rnn_state_dim
-
-        self.fc1 = nn.Linear(input_shape, hidden_dim)
-        self.rnn = nn.GRU(hidden_dim, rnn_state_dim, batch_first=True)
-
-    def init_hidden(self):
-        # make hidden states on same device as model
-        return self.fc1.weight.new(1, self.rnn_state_dim).zero_().squeeze(0)
-
-    def forward(self, inputs, hidden_state):
-        x = torch.relu(self.fc1(inputs))
-        h_in = hidden_state[0].unsqueeze(0)
-        output, h = self.rnn(x, h_in)
-        return output, h.squeeze(0)
-
-
 class MessageEncoder(nn.Module):
     """Parametrizes q(z|y).
     We use a single inference network that encodes
@@ -217,7 +71,7 @@ class MessageEncoder(nn.Module):
     def forward(self, x):
         n_latents = self.n_latents
         x = self.net(x.long())
-        x = x.view((-1, 2*n_latents))
+        x = x.view((-1, 2 * n_latents))
         return x[:, :n_latents], x[:, n_latents:]
 
 
@@ -247,23 +101,31 @@ class MessageDecoder(nn.Module):
         return z
 
 
-class LinearLayers(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
+class MLP(nn.Module):
+    """
+    input_dim: The dimension of input tensor.
+    hidden_dim: The dimension of hidden layers.
+    num_layers: The number of hidden layers.
+    activation: The non_linearity used for each hidden layer.['relu', 'tanh', 'swish']
+    last_activation: Whether to use activation for last layer.
+    """
+
+    def __init__(self, layers=None, activation='relu', last_activation=True):
         super().__init__()
-        self.layers = nn.Sequential(
-            SlimFC(in_size=input_dim,
-                   out_size=hidden_dim,
-                   initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
-            SlimFC(in_size=hidden_dim,
-                   out_size=hidden_dim,
-                   initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
-            SlimFC(in_size=hidden_dim,
-                   out_size=hidden_dim,
-                   initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
-        )
+        if layers is None:
+            layers = []
+        num_layers = len(layers)-1
+        mlp_layers = []
+        mlp_layers_app = mlp_layers.append
+        activations = [activation] * num_layers
+        if not last_activation:
+            activations[-1] = None
+        for i in range(num_layers):
+            mlp_layers_app(SlimFC(in_size=layers[i],
+                                  out_size=layers[i+1],
+                                  initializer=normc_initializer(1.0),
+                                  activation_fn=activations[i]))
+        self.layers = nn.Sequential(*mlp_layers)
 
     def forward(self, x):
         return self.layers(x)
@@ -272,16 +134,22 @@ class LinearLayers(nn.Module):
 class ProductOfExperts(nn.Module):
     """Return parameters for product of independent experts.
     See https://arxiv.org/pdf/1410.7827.pdf for equations.
-    @param mu: M x D for M experts
-    @param logvar: M x D for M experts
+    @param mu: B x M x D for M experts
+    @param logvar: B x M x D for M experts
     """
 
-    def forward(self, mu, logvar, eps=1e-8, dim=-1):
+    def forward(self, mu, logvar, eps=1e-8, dim=-1, weighting=True):
+        normalized_weights = 1
+        if weighting:
+            # computing weight
+            weight_matrix = torch.clamp(0.5 * (logvar[:, 0, :].unsqueeze(1) - logvar + eps), min=0)
+            sum_weights = torch.sum(weight_matrix, keepdim=True, dim=dim)
+            normalized_weights = weight_matrix / sum_weights
         var = torch.exp(logvar) + eps
         # precision of i-th Gaussian expert at point x
         T = 1. / var
-        pd_mu = torch.sum(mu * T, dim=dim) / torch.sum(T, dim=dim)
-        pd_var = 1. / torch.sum(T, dim=dim)
+        pd_mu = torch.sum(mu * normalized_weights * T, dim=dim) / torch.sum(normalized_weights * T, dim=dim)
+        pd_var = 1. / torch.sum(normalized_weights * T, dim=dim)
         pd_logvar = torch.log(pd_var)
         return pd_mu, pd_logvar
 
@@ -321,3 +189,70 @@ def reparametrize(mu, logvar, training=True):
     else:  # return mean during inference
         return mu
 
+# todo: implement weights in PoE
+# def compute_weights(mus, logvars, power, weighting, prior_var=None, softmax=False):
+#     """ Compute unnormalized weight matrix
+#     Inputs :
+#             -- mu_s, dimension: n_expert x n_test_points : predictive mean of each expert at each test point
+#             -- var_s, dimension: n_expert x n_test_points : predictive variance of each expert at each test point
+#             -- power, dimension : 1x1 : Softmax scaling
+#             -- weighting, str : weighting method (variance/wass/uniform/diff_entr/no_weights)
+#             -- prior_var, dimension: 1x1 : shared prior variance of expert GPs
+#             -- soft_max_wass : logical : whether to use softmax scaling or fraction scaling
+#
+#     Output :
+#             -- weight_matrix, dimension: n_expert x n_test_points : unnormalized weight of ith expert at jth test point
+#     """
+#
+#     if weighting == 'variance':
+#         weight_matrix = (-power * logvars).exp()
+#
+#     if weighting == 'wass':
+#         wass = mus.pow(2) + (logvars - prior_var).pow(2)
+#
+#         if softmax:
+#             weight_matrix = (power * wass).exp()
+#         else:
+#             weight_matrix = wass.pow(power)
+#
+#     if weighting == 'uniform':
+#         weight_matrix = torch.ones(mus.shape, dtype=torch.float32) / mus.shape[0]
+#
+#     if weighting == 'diff_entr':
+#         weight_matrix = 0.5 * (torch.log(prior_var) - torch.log(logvars))
+#
+#     if weighting == 'no_weights':
+#         weight_matrix = 1
+#
+#     return weight_matrix.float()
+#
+#
+# def normalize_weights(weight_matrix):
+#     """ Compute unnormalized weight matrix
+#     Inputs :
+#             -- weight_matrix, dimension: n_expert x n_test_points : unnormalized weight of ith expert at jth test point
+#
+#
+#     Output :
+#             -- weight_matrix, dimension: n_expert x n_test_points : normalized weight of ith expert at jth test point
+#     """
+#
+#     sum_weights = torch.sum(weight_matrix, dim=0)
+#     weight_matrix = weight_matrix / sum_weights
+#
+#     return weight_matrix
+#
+#         # For all DgPs, normalized weights of experts requiring normalized weights and compute the aggegated local precisions
+#         if method == 'PoE':
+#             prec = tf.reduce_sum(prec_s, axis=0)
+#
+#         if method == 'gPoE':
+#             weight_matrix = normalize_weights(weight_matrix)
+#
+#             prec = tf.reduce_sum(weight_matrix * prec_s, axis=0)
+# var = 1 / prec
+#
+# mu = var * tf.reduce_sum(weight_matrix * prec_s * mu_s, axis=0)
+#
+# mu = tf.reshape(mu, (-1, 1))
+# var = tf.reshape(var, (-1, 1))

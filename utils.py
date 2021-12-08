@@ -40,20 +40,27 @@ if __name__ == '__main__':
     config.silent = True
     env = SuperObsEnv(config)
     obs = env.reset()
-    step = 0
-    print(env.observation_spaces)
-    print('step', step)
-    print('obs', obs)
-    print('-' * 40)
-    done = False
-    dones = {'__all__': False}
-    while not dones['__all__']:
-        actions = {scheduler: env.action_spaces[scheduler].sample() for scheduler in env.schedulers}
-        obs, r, dones, info = env.step(actions)
-        step += 1
-        print('step', step)
-        print('action', actions)
-        print('obs', obs)
-        print('r', r)
-        print('info', info)
-        print('-'*40)
+    for scheduler in env.schedulers:
+        print(scheduler, env.observation_spaces[scheduler].contains(obs[scheduler]))
+    actions = {scheduler: env.action_spaces[scheduler].sample() for scheduler in env.schedulers}
+    obs, r, dones, info = env.step(actions)
+    for scheduler in env.schedulers:
+        print(scheduler, env.observation_spaces[scheduler].contains(obs[scheduler]))
+        print(obs[scheduler])
+    # step = 0
+    # print(env.observation_spaces)
+    # print('step', step)
+    # print('obs', obs)
+    # print('-' * 40)
+    # done = False
+    # dones = {'__all__': False}
+    # while not dones['__all__']:
+    #     actions = {scheduler: env.action_spaces[scheduler].sample() for scheduler in env.schedulers}
+    #     obs, r, dones, info = env.step(actions)
+    #     step += 1
+    #     print('step', step)
+    #     print('action', actions)
+    #     print('obs', obs)
+    #     print('r', r)
+    #     print('info', info)
+    #     print('-'*40)

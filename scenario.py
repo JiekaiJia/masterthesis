@@ -8,30 +8,31 @@ from packages import CreatePackage
 
 class BasicScenario:
 
-    def __init__(self, conf):
-        self.conf = conf
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.num_servers = cfg.n_servers
+        self.num_schedulers = cfg.n_schedulers
 
         # Initialize schedulers.
-        self.schedulers = [Scheduler(i + 1) for i in range(conf.n_schedulers)]
+        self.schedulers = [Scheduler(i + 1) for i in range(self.num_schedulers)]
         for i, scheduler in enumerate(self.schedulers):
             scheduler.name = f'scheduler_{i + 1}'
 
         # Initialize servers.
-        self.servers = [Server(i + 1, conf.serving_rate, conf.queue_max_len) for i in range(conf.n_servers)]
+        self.servers = [Server(i + 1, cfg.serving_rate, cfg.max_q_len) for i in range(self.num_servers)]
         for i, server in enumerate(self.servers):
             server.name = f'server_{i + 1}'
         # Initialize packages and drop_pkgs dict.
         self.reset()
 
     def reset(self):
+        # Clear servers' history length.
         for server in self.servers:
             server.reset()
-        self.packages = [CreatePackage(self.conf.n_packages, self.conf.arrival_rate, scheduler.name) for scheduler
+        # Reset packages that should arrive at schedulers.
+        self.packages = [CreatePackage(self.cfg.n_packages, self.cfg.arrival_rate, scheduler.name) for scheduler
                          in self.schedulers]
         self.drop_pkgs = {scheduler.name: 0 for scheduler in self.schedulers}
-
-    def benchmark_data(self, scheduler):
-        raise NotImplementedError()
 
     def reward(self, scheduler):
         # If two schedulers have the same target queue, then the package will drop and get the reward -1.
@@ -49,23 +50,29 @@ class BasicScenario:
 
 class PartialAccessScenario(BasicScenario):
     """This scenario has a delay time for information transmission and each scheduler can only observe and access
-    partial servers. The transmission delay will change every 10 seconds and the partial access is fixed initially."""
+    partial servers. The transmission delay will change every n seconds and the partial access is fixed initially."""
 
     def __init__(self, cfg):
         super().__init__(cfg)
-        self.delay_t = np.random.randint(1, high=4, size=self.conf.n_schedulers)
-        self.obs_servers = cfg.obs_servers
         # Action dimension is the number of observed queues. The scheduler must send packages when receiving packages.
-        self.dim_a = self.obs_servers
+        self.dim_a = cfg.num_obs_servers
+        self.delay_t = np.random.randint(1, high=4, size=self.num_schedulers)
+        self.obs_server_id = {}
         # The servers that each scheduler can observe and access.
-        idxs = [i for i in range(len(self.servers))]
+        idxs = [i for i in range(self.num_servers)]
         random.shuffle(idxs)
         for i, scheduler in enumerate(self.schedulers):
-            for j in range(self.obs_servers):
-                scheduler.obs_servers.append(self.servers[idxs[(i+j) % len(idxs)]])
-                self.servers[idxs[(i + j) % len(idxs)]].access_schedulers.append(scheduler)
-
-        # Setting a scheduler for each server, which can get real-time observations.
+            self.obs_server_id[scheduler.name] = []
+            obs_id_app = self.obs_server_id[scheduler.name].append
+            scheduler_obs_app = scheduler.obs_servers.append
+            for j in range(cfg.num_obs_servers):
+                chosen_server = self.servers[idxs[(i+j) % len(idxs)]]
+                obs_id_app(chosen_server.id)
+                scheduler_obs_app(chosen_server)
+                chosen_server.access_schedulers.append(scheduler)
+        # todo: for now each server can only be truly observed by one scheduler.
+        #  In future, let multiple schedulers observe true queue length.
+        # Setting at least one scheduler for each server, which can get real-time observations.
         self.real_obs_s = {}
         tmp = {}
         for server in self.servers:
@@ -73,7 +80,7 @@ class PartialAccessScenario(BasicScenario):
             tmp[server.name] = self.real_obs_s[server].name
 
     def reset_delay_t(self):
-        self.delay_t = np.random.randint(1, high=4, size=self.conf.n_schedulers)
+        self.delay_t = np.random.randint(1, high=4, size=self.num_schedulers)
 
     def observation(self, scheduler):
         # Observed delayed queue length
@@ -93,25 +100,3 @@ class PartialAccessScenario(BasicScenario):
                     queue_lens.append(server.history_len[-1-delay_t])
             real_queue_lens.append(server.history_len[-1])
         return queue_lens, real_queue_lens
-
-
-class PartialcommScenario(PartialAccessScenario):
-    """This scenario inherits from class PartialAccessScenario. It defines the communications between agents."""
-
-    def __init__(self, cfg):
-        super().__init__(cfg)
-        self.comm_group = {}
-        self.set_comm_group()
-
-    def set_comm_group(self):
-        # Each scheduler has a communication group, in which the agents share the same partial access.
-        # comm_group is a dict, whose key is object scheduler, value is a list of lists, lists include the schedulers
-        # that have the same access queues.
-        for scheduler in self.schedulers:
-            self.comm_group[scheduler] = []
-            for k, server in enumerate(scheduler.obs_servers):
-                tmp = []
-                for other in server.access_schedulers:
-                    if other is not scheduler:
-                        tmp.append(other)
-                self.comm_group[scheduler].append(tmp)

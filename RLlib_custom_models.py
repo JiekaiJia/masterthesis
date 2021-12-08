@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 from ray.rllib.models.modelv2 import ModelV2, restore_original_dimensions
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
@@ -11,11 +13,8 @@ from ray.rllib.models.torch.recurrent_net import RecurrentNetwork as TorchRNN
 from ray.rllib.utils import try_import_torch
 
 from model_components import (
-    MessageEncoder,
-    MessageDecoder,
     reparametrize,
-    RNNEncoder,
-    LinearLayers,
+    MLP,
     prior_expert,
     ProductOfExperts
 )
@@ -306,49 +305,34 @@ class SuperObsModel(TorchModelV2, nn.Module):
                  model_config,
                  name,
                  n_latents,
-                 hidden_dim):
+                 hidden_dim,
+                 silent=True):
         nn.Module.__init__(self)
         super().__init__(obs_space, action_space, num_outputs, model_config,
                          name)
-
+        self.silent = silent
         self.n_latents = n_latents
         self.obs_space = obs_space.original_space
+        self.reconstruct_loss = nn.CrossEntropyLoss(reduction='none')
         obs_shape = self.obs_space['self'].shape
-        encoding_dim = hidden_dim * 2
         # observation encoder
-        self.obs_encoder = nn.Sequential(
+        self.input_layer = nn.Sequential(
             SlimFC(in_size=obs_shape[0],
                    out_size=hidden_dim,
                    initializer=normc_initializer(1.0),
                    activation_fn='relu'),
-            SlimFC(in_size=hidden_dim,
-                   out_size=hidden_dim,
-                   initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
-            SlimFC(in_size=hidden_dim,
-                   out_size=encoding_dim,
-                   initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
         )
-        # message distribution
-        self.msg_dist = nn.Sequential(
-            SlimFC(in_size=encoding_dim,
-                   out_size=hidden_dim,
-                   initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
-            SlimFC(in_size=hidden_dim,
-                   out_size=hidden_dim,
-                   initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
-            SlimFC(in_size=hidden_dim,
-                   out_size=2 * n_latents,
-                   initializer=normc_initializer(1.0),
-                   activation_fn=None),
-        )
-        # communication method
-        self.PoE = ProductOfExperts()
+        hidden_in_dim = hidden_dim
+        if not silent:
+            hidden_in_dim = hidden_dim + n_latents
+            # message distribution
+            self.msg_encoder = MLP([hidden_dim, hidden_dim, 2 * n_latents], last_activation=False)
+            # communication method
+            self.PoE = ProductOfExperts()
+            self.msg_decoder = MLP([n_latents, hidden_dim, hidden_dim, hidden_dim, obs_shape[0]*6], last_activation=False)
+
         # NN main body
-        self.hidden_layers = LinearLayers(input_dim=(n_latents+encoding_dim), hidden_dim=hidden_dim)
+        self.hidden_layers = MLP([hidden_in_dim, hidden_dim, hidden_dim])
         self.action_branch = nn.Sequential(
             SlimFC(in_size=hidden_dim,
                    out_size=num_outputs,
@@ -370,24 +354,26 @@ class SuperObsModel(TorchModelV2, nn.Module):
     @override(ModelV2)
     def forward(self, input_dict, state, seq_lens):
         obs = input_dict['obs']
-        device = obs['self'].device
         shape = obs['self'].shape
 
         # obs = restore_original_dimensions(input_dict['obs'], self.obs_space, "torch")
         # self observation encoding
-        me = self.obs_encoder(obs['self'])
-        # others' messages encoding and concat.
-        mu, logvar = prior_expert((shape[0], 1, self.n_latents))
-        others_obs = torch.cat([o.unsqueeze(2).permute(0, 2, 1) for o in obs['others']], dim=1)
-        obs_encoding = self.obs_encoder(others_obs)
-        m_dist = self.msg_dist(obs_encoding)
-        self.m_mu = m_dist[:, :, :self.n_latents]
-        self.m_logvar = m_dist[:, :, self.n_latents:]
-        mus = torch.cat((mu, self.m_mu), dim=1)
-        logvars = torch.cat((logvar, self.m_logvar), dim=1)
-        msg_mu, msg_logvar = self.PoE(mus, logvars, dim=1)
-        msg_z = reparametrize(msg_mu, msg_logvar)
-        total = torch.cat((me, msg_z), dim=1)
+        me = self.input_layer(obs['self'])
+        total = me
+        if not self.silent:
+            mu, logvar = prior_expert((shape[0], 1, self.n_latents))
+            others_obs = torch.cat([o.unsqueeze(2).permute(0, 2, 1) for o in obs['others']], dim=1)
+            obs_encoding = self.input_layer(others_obs)
+            # others' messages encoding and concat.
+            m_dist = self.msg_encoder(obs_encoding)
+            self.m_mu = m_dist[:, :, :self.n_latents]
+            self.m_logvar = m_dist[:, :, self.n_latents:]
+            self.logits = self.msg_decoder(reparametrize(self.m_mu, self.m_logvar)).view(shape[0]*others_obs.shape[1], self.obs_space['self'].shape[0], -1)
+            mus = torch.cat((mu, self.m_mu), dim=1)
+            logvars = torch.cat((logvar, self.m_logvar), dim=1)
+            msg_mu, msg_logvar = self.PoE(mus, logvars, dim=1)
+            msg_z = reparametrize(msg_mu, msg_logvar)
+            total = torch.cat((me, msg_z), dim=1)
         self._features = self.hidden_layers(total)
         action_out = self.action_branch(self._features)
         return action_out, state
@@ -430,7 +416,7 @@ class SuperObsRNNModel(TorchRNN, nn.Module):
         # communication method
         self.PoE = ProductOfExperts()
         # NN main body
-        self.hidden_layers = LinearLayers(input_dim=self.gru_state_size, hidden_dim=hidden_dim)
+        self.hidden_layers = MLP(input_dim=self.gru_state_size, hidden_dim=hidden_dim)
         self.action_branch = nn.Sequential(
             SlimFC(in_size=hidden_dim,
                    out_size=num_outputs,

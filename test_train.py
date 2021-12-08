@@ -56,6 +56,7 @@ class RLlibAgent:
             "custom_model_config": {
                 "n_latents": cfg["n_latents"],
                 "hidden_dim": cfg["PPO_hidden_dim"],
+                "silent": cfg["silent"]
             },
         }
         config["framework"] = "torch"
@@ -95,13 +96,14 @@ class RLlibAgent:
         """
         # Train
         analysis = ray.tune.run(
+            # self.cfg["alg_name"] if self.cfg["silent"] else PPOTrainer,
             PPOTrainer,
             stop=self.stop_criteria,
             config=self.set_config(),
             name=self.cfg["experiment_name"],
             checkpoint_at_end=True,
-            local_dir=conf["local_dir"],
-            checkpoint_freq=conf["checkpoint_freq"],
+            local_dir=cfg["local_dir"],
+            checkpoint_freq=cfg["checkpoint_freq"],
             # resume=True
             # restore="/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_e22d5_00000_0_2021-11-13_22-34-37/checkpoint_000350/checkpoint-350"
         )
@@ -219,29 +221,29 @@ if __name__ == "__main__":
     args.cuda = args.cuda and torch.cuda.is_available()
 
     with open("./config/PartialAccess.json", "r") as f:
-        conf = json.loads(f.read())
+        cfg = json.loads(f.read())
 
-    conf["use_belief"] = args.use_belief
-    conf["silent"] = args.silent
-    conf["experiment_name"] = args.experiment_name
-    conf["belief_training"] = False
+    cfg["use_belief"] = args.use_belief
+    cfg["silent"] = args.silent
+    cfg["experiment_name"] = args.experiment_name
+    cfg["belief_training"] = False
     if args.use_belief:
         assert args.model_name is not None, "If use belief model, the model name must be given."
-        conf["model_name"] = args.model_name
+        cfg["model_name"] = args.model_name
 
     if args.test:
-        conf["num_workers"] = 0
-        conf["num_envs_per_worker"] = 1
+        cfg["num_workers"] = 0
+        cfg["num_envs_per_worker"] = 1
     else:
-        conf["num_workers"] = 2
-        conf["num_envs_per_worker"] = 10
+        cfg["num_workers"] = 2
+        cfg["num_envs_per_worker"] = 10
 
     # Create test environment.
-    env = SuperObsEnv(DotDic(conf))
+    env = SuperObsEnv(DotDic(cfg))
     # Register env
-    register_env(conf["env_name"], lambda _: SuperObsEnv(DotDic(conf)))
+    register_env(cfg["env_name"], lambda _: SuperObsEnv(DotDic(cfg)))
     ModelCatalog.register_custom_model("model", SuperObsModel)
-    ppo_agent = RLlibAgent(conf, env)
+    ppo_agent = RLlibAgent(cfg, env)
 
     if args.test:
         # analysis = ppo_agent.load_exp_results(f"./ray_results/{conf["experiment_name"]}")
