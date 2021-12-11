@@ -3,7 +3,6 @@ import copy
 import numpy as np
 from ray.rllib.models.modelv2 import ModelV2, restore_original_dimensions
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
-from ray.rllib.models.preprocessors import get_preprocessor
 from ray.rllib.models.torch.misc import (
     normc_initializer,
     SlimFC,
@@ -22,317 +21,33 @@ from model_components import (
 torch, nn = try_import_torch()
 
 
-# class Model(TorchModelV2, nn.Module):
-#     def __init__(
-#         self,
-#         obs_space,
-#         action_space,
-#         num_outputs,
-#         model_config,
-#         name,
-#         encoder_out_features,
-#         shared_nn_out_features_per_agent,
-#         value_state_encoder_cnn_out_features,
-#         share_observations,
-#     ):
-#         TorchModelV2.__init__(
-#             self, obs_space, action_space, num_outputs, model_config, name
-#         )
-#         nn.Module.__init__(self)
-#
-#         self.encoder_out_features = encoder_out_features
-#         self.shared_nn_out_features_per_agent = shared_nn_out_features_per_agent
-#         self.value_state_encoder_cnn_out_features = value_state_encoder_cnn_out_features
-#         self.share_observations = share_observations
-#
-#         self.n_agents = len(obs_space.original_space)
-#         self.outputs_per_agent = int(num_outputs / self.n_agents)
-#
-#         obs_shape = obs_space.original_space[0].shape
-#         ###########
-#         # NN main body
-#         self.action_encoder = nn.Sequential(
-#             SlimFC(in_size=obs_shape[0],
-#                    out_size=128,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='swish'),
-#             SlimFC(in_size=128,
-#                    out_size=128,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='swish'),
-#             SlimFC(in_size=128,
-#                    out_size=2*self.encoder_out_features,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn=None),
-#         )
-#
-#         self.value_encoder = copy.deepcopy(self.action_encoder)
-#
-#         share_n_agents = self.n_agents if self.share_observations else 1
-#         self.action_shared = nn.Sequential(
-#             SlimFC(in_size=self.encoder_out_features * share_n_agents,
-#                    out_size=hidden_dim,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#             SlimFC(in_size=hidden_dim,
-#                    out_size=hidden_dim,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#             SlimFC(in_size=hidden_dim,
-#                    out_size=hidden_dim,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#             SlimFC(in_size=hidden_dim,
-#                    out_size=self.shared_nn_out_features_per_agent * share_n_agents,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#         )
-#         self.value_shared = copy.deepcopy(self.action_shared)
-#         ###########
-#         # Action NN head
-#         action_post_logits = [
-#             SlimFC(in_size=self.shared_nn_out_features_per_agent,
-#                    out_size=128,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#             SlimFC(in_size=128,
-#                    out_size=self.outputs_per_agent,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn=None),
-#         ]
-#         self.action_output = nn.Sequential(*action_post_logits)
-#         ###########
-#         # Value NN head
-#         value_post_logits = [
-#             SlimFC(in_size=self.shared_nn_out_features_per_agent,
-#                    out_size=128,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#             SlimFC(in_size=128,
-#                    out_size=1,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn=None),
-#         ]
-#         self.value_output = nn.Sequential(*value_post_logits)
-#
-#     @override(ModelV2)
-#     def forward(self, input_dict, state, seq_lens):
-#         batch_size = input_dict["obs"][0].shape[0]
-#         device = input_dict["obs"][0].device
-#
-#         action_feature_map = torch.zeros(
-#             batch_size, self.n_agents, self.encoder_out_features
-#         ).to(device)
-#         value_feature_map = torch.zeros(
-#             batch_size, self.n_agents, self.encoder_out_features
-#         ).to(device)
-#         for i in range(self.n_agents):
-#             agent_obs = input_dict["obs"][i]
-#             a_mu_logvar = self.action_encoder(agent_obs)
-#             a_mu = a_mu_logvar[:, :self.encoder_out_features]
-#             a_logvar = a_mu_logvar[:, self.encoder_out_features:]
-#             action_feature_map[:, i] = torch.sigmoid(self.reparametrize(a_mu, a_logvar))
-#             v_mu_logvar = self.value_encoder(agent_obs)
-#             v_mu = v_mu_logvar[:, :self.encoder_out_features]
-#             v_logvar = v_mu_logvar[:, self.encoder_out_features:]
-#             value_feature_map[:, i] = torch.sigmoid(self.reparametrize(v_mu, v_logvar))
-#         # todo:PoE implementation.
-#         if self.share_observations:
-#             # We have a big common shared center NN so that all agents have access to the encoded observations of all agents
-#             action_shared_features = self.action_shared(
-#                 action_feature_map.view(
-#                     batch_size, self.n_agents * self.encoder_out_features
-#                 )
-#             ).view(batch_size, self.n_agents, self.shared_nn_out_features_per_agent)
-#             value_shared_features = self.value_shared(
-#                 value_feature_map.view(
-#                     batch_size, self.n_agents * self.encoder_out_features
-#                 )
-#             ).view(batch_size, self.n_agents, self.shared_nn_out_features_per_agent)
-#         else:
-#             # Each agent only has access to its own local observation
-#             shared_features = torch.empty(
-#                 batch_size, self.n_agents, self.shared_nn_out_features_per_agent
-#             ).to(device)
-#             for i in range(self.n_agents):
-#                 shared_features[:, i] = self.shared(feature_map[:, i])
-#
-#         outputs = torch.empty(batch_size, self.n_agents, self.outputs_per_agent).to(
-#             device
-#         )
-#         values = torch.empty(batch_size, self.n_agents).to(device)
-#
-#         for i in range(self.n_agents):
-#             outputs[:, i] = self.action_output(shared_features[:, i])
-#             values[:, i] = self.value_output(shared_features[:, i]).squeeze(1)
-#
-#         self._cur_value = values
-#
-#         return outputs.view(batch_size, self.n_agents * self.outputs_per_agent), state
-#
-#     @override(ModelV2)
-#     def value_function(self):
-#         assert self._cur_value is not None, "must call forward() first"
-#         return self._cur_value
-#
-#     def reparametrize(self, mu, logvar):
-#         if self.training:
-#             std = logvar.mul(0.5).exp_()
-#             eps = std.data.new(std.size()).normal_()
-#             return eps.mul(std).add_(mu)
-#         else:  # return mean during inference
-#             return mu
-
-
-# class SimpleModel(TorchModelV2, nn.Module):
-#     def __init__(
-#             self,
-#             obs_space,
-#             action_space,
-#             num_outputs,
-#             model_config,
-#             name,
-#             n_latents,
-#             hidden_dim,
-#     ):
-#         TorchModelV2.__init__(
-#             self, obs_space, action_space, num_outputs, model_config, name
-#         )
-#         nn.Module.__init__(self)
-#
-#         self.n_agents = len(obs_space.original_space)
-#         self.outputs_per_agent = int(num_outputs / self.n_agents)
-#
-#         self.obs_shape = obs_space.original_space[0].shape
-#         obs_shape = self.obs_shape
-#         ###########
-#         # NN main body
-#         share_n_agents = self.n_agents if self.share_observations else 1
-#         self.action_shared = nn.Sequential(
-#             SlimFC(in_size=obs_shape[0] * share_n_agents,
-#                    out_size=hidden_dim,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#             SlimFC(in_size=hidden_dim,
-#                    out_size=hidden_dim,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#             SlimFC(in_size=hidden_dim,
-#                    out_size=hidden_dim*share_n_agents,
-#                    initializer=normc_initializer(1.0),
-#                    activation_fn='tanh'),
-#         )
-#
-#         self.value_shared = copy.deepcopy(self.action_shared)
-#         ###########
-#         # Action NN head
-#         action_post_logits = [
-#             SlimFC(in_size=hidden_dim,
-#                    out_size=self.outputs_per_agent,
-#                    initializer=normc_initializer(0.01),
-#                    activation_fn=None),
-#         ]
-#         self.action_output = nn.Sequential(*action_post_logits)
-#         ###########
-#         # Value NN head
-#         value_post_logits = [
-#             SlimFC(in_size=hidden_dim,
-#                    out_size=1,
-#                    initializer=normc_initializer(0.01),
-#                    activation_fn=None),
-#         ]
-#         self.value_output = nn.Sequential(*value_post_logits)
-#
-#     @override(ModelV2)
-#     def forward(self, input_dict, state, seq_lens):
-#         batch_size = input_dict["obs"][0].shape[0]
-#         device = input_dict["obs"][0].device
-#
-#         feature_map = torch.zeros(
-#             batch_size, self.n_agents, self.obs_shape[0]
-#         ).to(device)
-#         for i in range(self.n_agents):
-#             feature_map[:, i] = input_dict["obs"][i]
-#
-#         if self.share_observations:
-#             # We have a big common shared center NN so that all agents have access to the encoded observations of all agents
-#             action_shared_features = self.action_shared(
-#                 feature_map.view(
-#                     batch_size, self.n_agents * self.obs_shape[0]
-#                 )
-#             ).view(batch_size, self.n_agents, hidden_dim)
-#             value_shared_features = self.value_shared(
-#                 feature_map.view(
-#                     batch_size, self.n_agents * self.obs_shape[0]
-#                 )
-#             ).view(batch_size, self.n_agents, hidden_dim)
-#         else:
-#             # Each agent only has access to its own local observation
-#             action_shared_features = torch.empty(
-#                 batch_size, self.n_agents, hidden_dim
-#             ).to(device)
-#             value_shared_features = torch.empty(
-#                 batch_size, self.n_agents, hidden_dim
-#             ).to(device)
-#             for i in range(self.n_agents):
-#                 action_shared_features[:, i] = self.action_shared(feature_map[:, i])
-#                 value_shared_features[:, i] = self.value_shared(feature_map[:, i])
-#
-#         outputs = torch.empty(batch_size, self.n_agents, self.outputs_per_agent).to(
-#             device
-#         )
-#         values = torch.empty(batch_size, self.n_agents).to(device)
-#
-#         for i in range(self.n_agents):
-#             outputs[:, i] = self.action_output(action_shared_features[:, i])
-#             values[:, i] = self.value_output(value_shared_features[:, i]).squeeze(1)
-#
-#         self._cur_value = values
-#
-#         return outputs.view(batch_size, self.n_agents * self.outputs_per_agent), state
-#
-#     @override(ModelV2)
-#     def value_function(self):
-#         assert self._cur_value is not None, "must call forward() first"
-#         return self._cur_value
-
-
-class SuperObsModel(TorchModelV2, nn.Module):
+class MaskPoEModel(TorchModelV2, nn.Module):
     def __init__(self,
                  obs_space,
                  action_space,
                  num_outputs,
                  model_config,
                  name,
+                 silent,
                  n_latents,
                  hidden_dim,
-                 silent=True):
+                 ):
         nn.Module.__init__(self)
         super().__init__(obs_space, action_space, num_outputs, model_config,
                          name)
         self.silent = silent
         self.n_latents = n_latents
         self.obs_space = obs_space.original_space
-        self.reconstruct_loss = nn.CrossEntropyLoss(reduction='none')
-        obs_shape = self.obs_space['self'].shape
-        # observation encoder
-        self.input_layer = nn.Sequential(
-            SlimFC(in_size=obs_shape[0],
-                   out_size=hidden_dim,
-                   initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
-        )
-        hidden_in_dim = hidden_dim
-        if not silent:
-            hidden_in_dim = hidden_dim + n_latents
-            # message distribution
-            self.msg_encoder = MLP([hidden_dim, hidden_dim, 2 * n_latents], last_activation=False)
-            # communication method
-            self.PoE = ProductOfExperts()
-            self.msg_decoder = MLP([n_latents, hidden_dim, hidden_dim, hidden_dim, obs_shape[0]*6], last_activation=False)
-
+        self.reconstruct_loss = nn.CrossEntropyLoss(reduction="none")
+        obs_shape = self.obs_space["self"].shape
+        # observation encoder.
+        self.encoder = MLP([obs_shape[0], hidden_dim, 2 * n_latents], last_activation=False)
+        # communication method
+        self.PoE = ProductOfExperts()
         # NN main body
-        self.hidden_layers = MLP([hidden_in_dim, hidden_dim, hidden_dim])
+        self.hidden_layers = MLP([n_latents, hidden_dim, hidden_dim])
+        self.decoder_head = MLP([hidden_dim, 6 * obs_shape[0]], last_activation=False)
+        self.value_layers = MLP([2 * n_latents, hidden_dim, hidden_dim])
         self.action_branch = nn.Sequential(
             SlimFC(in_size=hidden_dim,
                    out_size=num_outputs,
@@ -343,39 +58,228 @@ class SuperObsModel(TorchModelV2, nn.Module):
                    out_size=1,
                    initializer=normc_initializer(0.01),
                    activation_fn=None))
-        # Holds the current "base" output (before logits layer).
-        self._features = None
+        # Holds the current 'base' output (before logits layer).
+        self.value_features = None
 
     @override(ModelV2)
     def value_function(self):
-        assert self._features is not None, "must call forward() first"
-        return torch.reshape(self.value_branch(self._features), [-1])
+        assert self.value_features is not None, "must call forward() first"
+        return torch.reshape(self.value_branch(self.value_features), [-1])
 
     @override(ModelV2)
     def forward(self, input_dict, state, seq_lens):
-        obs = input_dict['obs']
-        shape = obs['self'].shape
+        obs = input_dict["obs"]
+        shape = obs["self"].shape
+        batch_size = shape[0]
+        obs_len = shape[1]
+        obs_mask = obs["obs_mask"]
 
-        # obs = restore_original_dimensions(input_dict['obs'], self.obs_space, "torch")
-        # self observation encoding
-        me = self.input_layer(obs['self'])
-        total = me
+        me = self.encoder(obs["self"])
+        real_me = self.encoder(obs["real_obs"])
+        me_mu = me[:, :self.n_latents]
+        me_logvar = me[:, self.n_latents:]
+        self.final_mu, self.final_logvar = me_mu, me_logvar
         if not self.silent:
-            mu, logvar = prior_expert((shape[0], 1, self.n_latents))
-            others_obs = torch.cat([o.unsqueeze(2).permute(0, 2, 1) for o in obs['others']], dim=1)
-            obs_encoding = self.input_layer(others_obs)
-            # others' messages encoding and concat.
-            m_dist = self.msg_encoder(obs_encoding)
-            self.m_mu = m_dist[:, :, :self.n_latents]
-            self.m_logvar = m_dist[:, :, self.n_latents:]
-            self.logits = self.msg_decoder(reparametrize(self.m_mu, self.m_logvar)).view(shape[0]*others_obs.shape[1], self.obs_space['self'].shape[0], -1)
-            mus = torch.cat((mu, self.m_mu), dim=1)
-            logvars = torch.cat((logvar, self.m_logvar), dim=1)
-            msg_mu, msg_logvar = self.PoE(mus, logvars, dim=1)
-            msg_z = reparametrize(msg_mu, msg_logvar)
-            total = torch.cat((me, msg_z), dim=1)
-        self._features = self.hidden_layers(total)
-        action_out = self.action_branch(self._features)
+            prior_mu, prior_logvar = prior_expert((shape[0], 1, self.n_latents))
+            others_obs = torch.cat([o.unsqueeze(1) for o in obs["others"]], dim=1)
+            digits_masks = [torch.cat([m.unsqueeze(1) for m in mask], dim=1) for mask in obs_mask]
+            masked_obs_o = [others_obs * mask for mask in digits_masks]
+            codes = [self.encoder(o) for o in masked_obs_o]
+            msg = [self.PoE(torch.cat([prior_mu, code[:, :, :self.n_latents]], dim=1), torch.cat([prior_logvar, code[:, :, self.n_latents:]], dim=1), dim=1)
+                   for code in codes]
+            sprune_msg = [self.PoE(mu.view(batch_size, obs_len, -1), logvar.view(batch_size, obs_len, -1), dim=1) for mu, logvar in msg]
+            sprune_mus, sprune_logvars = [], []
+            sprune_mus_app, sprune_logvars_app = sprune_mus.append, sprune_logvars.append
+            for sprune_mu, sprune_logvar in sprune_msg:
+              sprune_mus_app(sprune_mu)
+              sprune_logvars_app(sprune_logvar)
+            sprune_mu_tensor = torch.cat(sprune_mus, dim=1)
+            sprune_logvar_tensor = torch.cat(sprune_logvars, dim=1)
+            pd_mu, pd_logvar = self.PoE(torch.cat([sprune_mu_tensor.unsqueeze(1), me_mu.unsqueeze(1)], dim=1), torch.cat([sprune_logvar_tensor.unsqueeze(1), me_logvar.unsqueeze(1)], dim=1), dim=1)
+            self.final_mu, self.final_logvar = pd_mu, pd_logvar
+        z = reparametrize(self.final_mu, self.final_logvar)
+        self.action_features = self.hidden_layers(z)
+        self.logits = self.decoder_head(self.action_features).view(batch_size, obs_len, -1)
+        self.value_features = self.value_layers(torch.cat([real_me[:, :self.n_latents], z], dim=1))
+        action_out = self.action_branch(self.action_features)
+        return action_out, state
+
+
+class AttentionPoEModel(TorchModelV2, nn.Module):
+    def __init__(self,
+                 obs_space,
+                 action_space,
+                 num_outputs,
+                 model_config,
+                 name,
+                 silent,
+                 n_latents,
+                 hidden_dim,
+                 ):
+        nn.Module.__init__(self)
+        super().__init__(obs_space, action_space, num_outputs, model_config,
+                         name)
+        self.silent = silent
+        self.n_latents = n_latents
+        self.obs_space = obs_space.original_space
+        self.reconstruct_loss = nn.CrossEntropyLoss(reduction="none")
+        obs_shape = self.obs_space["self"].shape
+        # observation encoder.
+        self.encoder = MLP([obs_shape[0], hidden_dim, 2 * n_latents], last_activation=False)
+        # attention module aggregates the messages between other agents.
+        self.linear_k = nn.Sequential(
+            SlimFC(in_size=2 * n_latents,
+                   out_size=2 * n_latents,
+                   initializer=normc_initializer(1.0),
+                   activation_fn=None),
+        )
+        self.linear_q = nn.Sequential(
+            SlimFC(in_size=2 * n_latents,
+                   out_size=2 * n_latents,
+                   initializer=normc_initializer(1.0),
+                   activation_fn=None),
+        )
+        self.linear_v = nn.Sequential(
+            SlimFC(in_size=2 * n_latents,
+                   out_size=2 * n_latents,
+                   initializer=normc_initializer(1.0),
+                   activation_fn=None),
+        )
+        self.attention = nn.MultiheadAttention(embed_dim=2 * n_latents, num_heads=obs_shape[0], batch_first=True)
+        self.layer_norm = nn.LayerNorm(2 * n_latents)
+        # communication method
+        self.PoE = ProductOfExperts()
+        # NN main body
+        self.hidden_layers = MLP([n_latents, hidden_dim, hidden_dim])
+        self.decoder_head = MLP([hidden_dim, 6 * obs_shape[0]], last_activation=False)
+        self.value_layers = MLP([2 * n_latents, hidden_dim, hidden_dim])
+        self.action_branch = nn.Sequential(
+            SlimFC(in_size=hidden_dim,
+                   out_size=num_outputs,
+                   initializer=normc_initializer(0.01),
+                   activation_fn=None))
+        self.value_branch = nn.Sequential(
+            SlimFC(in_size=hidden_dim,
+                   out_size=1,
+                   initializer=normc_initializer(0.01),
+                   activation_fn=None))
+        # Holds the current 'base' output (before logits layer).
+        self.value_features = None
+
+    @override(ModelV2)
+    def value_function(self):
+        assert self.value_features is not None, "must call forward() first"
+        return torch.reshape(self.value_branch(self.value_features), [-1])
+
+    @override(ModelV2)
+    def forward(self, input_dict, state, seq_lens):
+        obs = input_dict["obs"]
+        shape = obs["self"].shape
+        batch_size = shape[0]
+        obs_len = shape[1]
+        num_others = len(obs["others"])
+        obs_mask = obs["obs_mask"]
+
+        # self observation encoding
+        me = self.encoder(obs["self"])
+        real_me = self.encoder(obs["real_obs"])
+        me_mu = me[:, :self.n_latents]
+        me_logvar = me[:, self.n_latents:]
+        self.final_mu, self.final_logvar = me_mu, me_logvar
+        if not self.silent:
+            prior_mu, prior_logvar = prior_expert((shape[0], 1, self.n_latents))
+            others_obs = torch.cat([o.unsqueeze(1) for o in obs["others"]], dim=1)
+            others_msg = self.encoder(others_obs)
+            q = self.linear_q(others_msg)
+            k = self.linear_k(others_msg)
+            v = self.linear_v(others_msg)
+            attn_output, attn_output_weights = self.attention(q.unsqueeze, k.unsqueeze, v.unsqueeze)
+            attn_output = self.layer_norm(attn_output)
+            cat_mu = torch.cat([prior_mu, me_mu.unsqueeze(1), attn_output[:, :, :self.n_latents]], dim=1)
+            cat_logvar = torch.cat([prior_logvar, me_logvar.unsqueeze(1), attn_output[:, :, self.n_latents:]], dim=1)
+            pd_mu, pd_logvar = self.PoE(cat_mu, cat_logvar, dim=1)
+            self.final_mu, self.final_logvar = pd_mu, pd_logvar
+        z = reparametrize(self.final_mu, self.final_logvar)
+        self.action_features = self.hidden_layers(z)
+        self.logits = self.decoder_head(self.action_features).view(batch_size, obs_len, -1)
+        self.value_features = self.value_layers(torch.cat([real_me[:, :self.n_latents], z], dim=1))
+        action_out = self.action_branch(self.action_features)
+        return action_out, state
+
+
+class CommnetModel(TorchModelV2, nn.Module):
+    def __init__(self,
+                 obs_space,
+                 action_space,
+                 num_outputs,
+                 model_config,
+                 name,
+                 silent,
+                 n_latents,
+                 hidden_dim,
+                 ):
+        nn.Module.__init__(self)
+        super().__init__(obs_space, action_space, num_outputs, model_config,
+                         name)
+        self.silent = silent
+        self.n_latents = n_latents
+        self.obs_space = obs_space.original_space
+        self.reconstruct_loss = nn.CrossEntropyLoss(reduction="none")
+        obs_shape = self.obs_space["self"].shape
+        # observation encoder.
+        self.encoder = MLP([obs_shape[0], hidden_dim], last_activation=False)
+        # communication channel
+        self.f_linear = MLP([3 * hidden_dim, hidden_dim, hidden_dim])
+        # action head
+        self.action_branch = nn.Sequential(
+            SlimFC(in_size=hidden_dim,
+                   out_size=num_outputs,
+                   initializer=normc_initializer(0.01),
+                   activation_fn=None))
+        # value head
+        self.value_branch = nn.Sequential(
+            SlimFC(in_size=hidden_dim,
+                   out_size=1,
+                   initializer=normc_initializer(0.01),
+                   activation_fn=None))
+        # Holds the current 'base' output (before logits layer).
+        self.value_features = None
+
+    @override(ModelV2)
+    def value_function(self):
+        assert self.value_features is not None, "must call forward() first"
+        return torch.reshape(self.value_branch(self.value_features), [-1])
+
+    @override(ModelV2)
+    def forward(self, input_dict, state, seq_lens):
+        obs = input_dict["obs"]
+        shape = obs["self"].shape
+        batch_size = shape[0]
+        obs_len = shape[1]
+        num_others = len(obs["others"])
+        obs_mask = obs["obs_mask"]
+
+        h = self.encoder(obs["self"])
+        others_h = torch.cat([self.encoder(o.unsqueeze(1)) for o in obs["others"]], dim=1)
+        total_h = torch.cat([h.unsqueeze(1), others_h], dim=1)
+        total_init_h = total_h.clone()
+        # 2 communication steps
+        for _ in range(2):
+            h = []
+            h_app = h.append
+            for i in range(num_others+1):
+                mask = torch.ones_like(total_h)
+                mask[:, i, :] = torch.zeros_like(mask[:, i, :])
+                mask = torch.ge(mask, 0.5)
+                masked_out = total_h[mask].view(batch_size, num_others, -1)
+                c = torch.mean(masked_out, dim=1)
+                f_input = torch.cat([total_h[:, i, :], c, total_init_h[:, i, :]], dim=1)
+                h_app(self.f_linear(f_input).unsqueeze(1))
+            total_h = torch.cat(h, dim=1)
+
+        features = total_h[:, 0, :]
+        self.value_features = features
+        action_out = self.action_branch(features)
         return action_out, state
 
 
@@ -393,7 +297,7 @@ class SuperObsRNNModel(TorchRNN, nn.Module):
                          name)
 
         self.obs_space = obs_space.original_space
-        obs_shape = self.obs_space['self'].shape
+        obs_shape = self.obs_space["self"].shape
         self.gru_state_size = n_latents * obs_shape[0]
         # observation encoder
         self.fc1 = nn.Linear(obs_shape[0], hidden_dim)
@@ -403,11 +307,11 @@ class SuperObsRNNModel(TorchRNN, nn.Module):
             SlimFC(in_size=self.gru_state_size,
                    out_size=hidden_dim,
                    initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
+                   activation_fn="relu"),
             SlimFC(in_size=hidden_dim,
                    out_size=hidden_dim,
                    initializer=normc_initializer(1.0),
-                   activation_fn='relu'),
+                   activation_fn="relu"),
             SlimFC(in_size=hidden_dim,
                    out_size=2 * self.gru_state_size,
                    initializer=normc_initializer(1.0),
@@ -457,14 +361,14 @@ class SuperObsRNNModel(TorchRNN, nn.Module):
         shape = inputs.shape
         obs = restore_original_dimensions(inputs, self.obs_space, "torch")
         # self observation encoding
-        me = torch.relu(self.fc1(obs['self']))
+        me = torch.relu(self.fc1(obs["self"]))
         gru_out_me, h_me = self.gru(me, torch.unsqueeze(state[0], 0))
-        # others' messages encoding and concat.
+        # others" messages encoding and concat.
         mu, logvar = prior_expert((shape[0], shape[1], self.gru_state_size, 1))
         msg_mus, msg_logvars = [mu.to(device)], [logvar.to(device)]
         states = [torch.squeeze(h_me, 0)]
         states_app, msg_mu_app, msg_logvar_app = states.append, msg_mus.append, msg_logvars.append
-        for i, other in enumerate(obs['others']):
+        for i, other in enumerate(obs["others"]):
             f = torch.relu(self.fc1(other))
             gru_o, h_o = self.gru(f, torch.unsqueeze(state[i+1], 0))
             dist = self.msg_dist(gru_o).unsqueeze(3)

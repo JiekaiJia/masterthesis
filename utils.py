@@ -40,6 +40,7 @@ if __name__ == '__main__':
     config.silent = True
     env = SuperObsEnv(config)
     obs = env.reset()
+    print(env.obs_mask)
     for scheduler in env.schedulers:
         print(scheduler, env.observation_spaces[scheduler].contains(obs[scheduler]))
     actions = {scheduler: env.action_spaces[scheduler].sample() for scheduler in env.schedulers}

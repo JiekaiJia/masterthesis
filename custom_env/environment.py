@@ -321,6 +321,8 @@ class RLlibEnv(MultiAgentEnv):
     def step(self, actions):
         env = self.raw_env
         obss, rews, dones, infos = env.step(actions)
+        total_r = sum(rews.values())
+        new_rews = {k: total_r for k, _ in rews.items()}
         self.schedulers = env.schedulers
         dones_ = {k: dones[k] for k in self.schedulers}
         dones_["__all__"] = all(dones.values())
@@ -329,9 +331,9 @@ class RLlibEnv(MultiAgentEnv):
             new_obs = {scheduler: sigmoid(torch.cat(obss[3][env.index_map[scheduler]], dim=0).cpu().numpy())
                        for scheduler in self.schedulers}
         else:
-            new_obs = {k: v[0] for k, v in obss.items()}
+            new_obs = {k: v[1] for k, v in obss.items()}
         # ("real_obs:", {k: v[1] for k, v in obss.items()})
-        return new_obs, rews, dones_, infos
+        return new_obs, new_rews, dones_, infos
 
 
 class SuperAgentEnv(gym.Env):
@@ -382,6 +384,7 @@ class SuperObsEnv(MultiAgentEnv):
 
         self.cfg = cfg
         self.raw_env = make_rllibenv(DelayedNetwork)(cfg, PartialAccessScenario)
+
         self.scenario = self.raw_env.scenario
         self.schedulers = self.raw_env.schedulers
         self.num_schedulers = cfg.n_schedulers
@@ -390,15 +393,19 @@ class SuperObsEnv(MultiAgentEnv):
         self.obs_server_id = self.scenario.obs_server_id
 
         # Set the observation spaces.
+        num_obs_servers = cfg.num_obs_servers
         self.observation_spaces = {}
         agent_observation_space = self.raw_env.observation_spaces[self.schedulers[0]]
-        agent_idx_space = Box(low=1, high=cfg.n_servers, shape=agent_observation_space.shape, dtype=np.int32)
         for scheduler in self.schedulers:
             self.observation_spaces[scheduler] = Dict(
                 {"self": agent_observation_space,
-                 "self_obs_id": agent_idx_space,
+                 "real_obs": agent_observation_space,
                  "others": Tuple((agent_observation_space,) * (self.num_schedulers - 1)),
-                 "others_obs_id": Tuple((agent_idx_space,) * (self.num_schedulers - 1)),
+                 "obs_mask": Tuple(
+                     (Tuple(
+                         (Box(low=0, high=1, shape=(num_obs_servers, ), dtype=np.int32),)
+                         * (self.num_schedulers - 1)),)
+                     * cfg.num_obs_servers),
                  })
 
         # The other schedulers observed server id.
@@ -408,7 +415,13 @@ class SuperObsEnv(MultiAgentEnv):
             others_id_app = self.others_obs_id[scheduler].append
             for other in self.schedulers:
                 if other != scheduler:
-                    others_id_app(np.asarray(self.obs_server_id[other], dtype=np.int32))
+                    others_id_app(self.obs_server_id[other])
+        
+        self.obs_mask = {scheduler: [[np.zeros((num_obs_servers,), dtype=np.int32)
+                                      for _ in range(self.num_schedulers - 1)] for _ in range(cfg.num_obs_servers)]
+                         for scheduler in self.schedulers}
+
+        self.set_obs_mask()
 
     def seed(self, seed=None):
         self.random_state, seed = seeding.np_random(seed)
@@ -423,9 +436,9 @@ class SuperObsEnv(MultiAgentEnv):
         self.schedulers = self.raw_env.schedulers
         self.acc_drop_pkgs = self.raw_env.acc_drop_pkgs
         new_obss = {scheduler: {"self": np.asarray(obs, dtype=np.int32),
-                                "self_obs_id": np.asarray(self.obs_server_id[scheduler], dtype=np.int32),
+                                "real_obs": np.asarray(obs, dtype=np.int32),
                                 "others": tuple((np.zeros_like(obs, dtype=np.int32),)*(self.num_schedulers-1)),
-                                "others_obs_id": tuple(self.others_obs_id[scheduler]),
+                                "obs_mask": tuple(self.obs_mask[scheduler]),
                                 } for scheduler, obs in obss.items()}
 
         return new_obss
@@ -433,6 +446,8 @@ class SuperObsEnv(MultiAgentEnv):
     def step(self, actions):
         env = self.raw_env
         obss, rews, dones, infos = env.step(actions)
+        total_r = sum(rews.values())
+        new_rews = {k: total_r for k, _ in rews.items()}
         self.schedulers = env.schedulers
         dones_ = {k: dones[k] for k in self.schedulers}
         dones_["__all__"] = all(dones.values())
@@ -449,11 +464,19 @@ class SuperObsEnv(MultiAgentEnv):
                         others_app(np.zeros_like(obs[0], dtype=np.int32))
             # Update the new observations.
             new_obss[scheduler] = {"self": np.asarray(obs[0], dtype=np.int32),
-                                   "self_obs_id": np.asarray(self.obs_server_id[scheduler], dtype=np.int32),
-                                   "others_obs_id": tuple(self.others_obs_id[scheduler]),
-                                   "others": tuple(others)}
+                                   "real_obs": np.asarray(obs[1], dtype=np.int32),
+                                   "others": tuple(others),
+                                   "obs_mask": tuple(self.obs_mask[scheduler]),}
         # ("real_obs:", {k: v[1] for k, v in obss.items()})
-        return new_obss, rews, dones_, infos
+        return new_obss, new_rews, dones_, infos
+
+    def set_obs_mask(self):
+        for scheduler in self.schedulers:
+            for j, s_id in enumerate(self.obs_server_id[scheduler]):
+                for i, others in enumerate(self.others_obs_id[scheduler]):
+                    if s_id not in others:
+                        continue
+                    self.obs_mask[scheduler][j][i][others.index(s_id)] = 1
 
 
 def make_rllibenv(cls):

@@ -1,4 +1,5 @@
 """https://github.com/mhw32/multimodal-vae-public"""
+import math
 
 from ray.rllib.models.torch.misc import (
     normc_initializer,
@@ -138,7 +139,7 @@ class ProductOfExperts(nn.Module):
     @param logvar: B x M x D for M experts
     """
 
-    def forward(self, mu, logvar, eps=1e-8, dim=-1, weighting=True):
+    def forward(self, mu, logvar, eps=1e-8, dim=-1, weighting=False):
         normalized_weights = 1
         if weighting:
             # computing weight
@@ -188,71 +189,3 @@ def reparametrize(mu, logvar, training=True):
         return eps.mul(std).add_(mu)
     else:  # return mean during inference
         return mu
-
-# todo: implement weights in PoE
-# def compute_weights(mus, logvars, power, weighting, prior_var=None, softmax=False):
-#     """ Compute unnormalized weight matrix
-#     Inputs :
-#             -- mu_s, dimension: n_expert x n_test_points : predictive mean of each expert at each test point
-#             -- var_s, dimension: n_expert x n_test_points : predictive variance of each expert at each test point
-#             -- power, dimension : 1x1 : Softmax scaling
-#             -- weighting, str : weighting method (variance/wass/uniform/diff_entr/no_weights)
-#             -- prior_var, dimension: 1x1 : shared prior variance of expert GPs
-#             -- soft_max_wass : logical : whether to use softmax scaling or fraction scaling
-#
-#     Output :
-#             -- weight_matrix, dimension: n_expert x n_test_points : unnormalized weight of ith expert at jth test point
-#     """
-#
-#     if weighting == 'variance':
-#         weight_matrix = (-power * logvars).exp()
-#
-#     if weighting == 'wass':
-#         wass = mus.pow(2) + (logvars - prior_var).pow(2)
-#
-#         if softmax:
-#             weight_matrix = (power * wass).exp()
-#         else:
-#             weight_matrix = wass.pow(power)
-#
-#     if weighting == 'uniform':
-#         weight_matrix = torch.ones(mus.shape, dtype=torch.float32) / mus.shape[0]
-#
-#     if weighting == 'diff_entr':
-#         weight_matrix = 0.5 * (torch.log(prior_var) - torch.log(logvars))
-#
-#     if weighting == 'no_weights':
-#         weight_matrix = 1
-#
-#     return weight_matrix.float()
-#
-#
-# def normalize_weights(weight_matrix):
-#     """ Compute unnormalized weight matrix
-#     Inputs :
-#             -- weight_matrix, dimension: n_expert x n_test_points : unnormalized weight of ith expert at jth test point
-#
-#
-#     Output :
-#             -- weight_matrix, dimension: n_expert x n_test_points : normalized weight of ith expert at jth test point
-#     """
-#
-#     sum_weights = torch.sum(weight_matrix, dim=0)
-#     weight_matrix = weight_matrix / sum_weights
-#
-#     return weight_matrix
-#
-#         # For all DgPs, normalized weights of experts requiring normalized weights and compute the aggegated local precisions
-#         if method == 'PoE':
-#             prec = tf.reduce_sum(prec_s, axis=0)
-#
-#         if method == 'gPoE':
-#             weight_matrix = normalize_weights(weight_matrix)
-#
-#             prec = tf.reduce_sum(weight_matrix * prec_s, axis=0)
-# var = 1 / prec
-#
-# mu = var * tf.reduce_sum(weight_matrix * prec_s * mu_s, axis=0)
-#
-# mu = tf.reshape(mu, (-1, 1))
-# var = tf.reshape(var, (-1, 1))

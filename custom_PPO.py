@@ -21,6 +21,7 @@ from ray.rllib.utils.framework import try_import_torch
 from ray.rllib.utils.torch_ops import apply_grad_clipping, \
     explained_variance, sequence_mask
 from ray.rllib.utils.typing import TensorType, TrainerConfigDict
+import torch.distributions as D
 
 torch, nn = try_import_torch()
 
@@ -102,20 +103,24 @@ def ppo_surrogate_loss(
         vf_loss = mean_vf_loss = 0.0
   
     # Auto encoder KL divergence
-    kld_loss = -0.5 * torch.sum(1 + model.m_logvar - model.m_mu.pow(2) - model.m_logvar.exp(), dim=-1)
-    mean_kld_loss = reduce_mean_valid(kld_loss)
+    kld_loss = -0.5 * torch.sum(1 + model.final_logvar - model.final_mu.pow(2) - model.final_logvar.exp(), dim=-1)
+    mean_kld_loss = reduce_mean_valid(torch.sum(kld_loss, dim=-1))
     # Auto encoder reconstruction loss
     mean_reconstruct_loss = torch.zeros(1)
-    # obs = restore_original_dimensions(train_batch['obs'], model.obs_space, "torch")
-    # reconstruct_loss = model.reconstruct_loss(model.logits.permute(0, 2, 1), obs['self'].long())
-    # mean_reconstruct_loss = reduce_mean_valid(torch.sum(reconstruct_loss, dim=1))
+    obs = restore_original_dimensions(train_batch['obs'], model.obs_space, "torch")
+    reconstruct_loss = model.reconstruct_loss(model.logits.permute(0, 2, 1), obs['real_obs'].long())
+    mean_reconstruct_loss = reduce_mean_valid(torch.sum(reconstruct_loss, dim=1))
+
+    # expressiveness_loss = reduce_mean_valid(-curr_action_dist.logp(train_batch[SampleBatch.ACTIONS]))
+    expressiveness_loss = torch.zeros(1)
 
     total_loss = reduce_mean_valid(-surrogate_loss +
                                    policy.kl_coeff * action_kl +
                                    policy.config["vf_loss_coeff"] * vf_loss -
                                    policy.entropy_coeff * curr_entropy +
                                    1e-3 * mean_kld_loss + 
-                                   1e-3 * mean_reconstruct_loss)
+                                   1e-3 * mean_reconstruct_loss +
+                                   1e-3 * expressiveness_loss)
 
     # Store values for stats function in model (tower), such that for
     # multi-GPU, we do not override them during the parallel loss phase.
@@ -128,6 +133,7 @@ def ppo_surrogate_loss(
     model.tower_stats["mean_kl_loss"] = mean_kl_loss
     model.tower_stats["mean_msg_kl_loss"] = mean_kld_loss
     model.tower_stats["mean_reconstruct_loss"] = mean_reconstruct_loss
+    model.tower_stats["expressiveness_loss"] = expressiveness_loss
 
     return total_loss
 
@@ -162,6 +168,8 @@ def kl_and_loss_stats(policy: Policy,
             torch.stack(policy.get_tower_stats("mean_msg_kl_loss"))),
         "msg_reconstruct_loss": torch.mean(
             torch.stack(policy.get_tower_stats("mean_reconstruct_loss"))),
+        "expressiveness_loss": torch.mean(
+            torch.stack(policy.get_tower_stats("expressiveness_loss"))),
             }
 
 

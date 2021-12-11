@@ -11,7 +11,7 @@ import tqdm
 
 from custom_env.environment import RLlibEnv, SuperObsEnv
 from custom_PPO import PPOTrainer
-from RLlib_custom_models import SuperObsModel, SuperObsRNNModel
+from RLlib_custom_models import MaskPoEModel, SuperObsRNNModel, CommnetModel
 from logger import get_logger
 from utils import DotDic, sigmoid
 
@@ -54,9 +54,9 @@ class RLlibAgent:
         config["model"] = {
             "custom_model": "model",
             "custom_model_config": {
+                "silent": cfg["silent"],
                 "n_latents": cfg["n_latents"],
                 "hidden_dim": cfg["PPO_hidden_dim"],
-                "silent": cfg["silent"]
             },
         }
         config["framework"] = "torch"
@@ -97,7 +97,7 @@ class RLlibAgent:
         # Train
         analysis = ray.tune.run(
             # self.cfg["alg_name"] if self.cfg["silent"] else PPOTrainer,
-            PPOTrainer,
+            self.cfg["alg_name"],
             stop=self.stop_criteria,
             config=self.set_config(),
             name=self.cfg["experiment_name"],
@@ -242,7 +242,7 @@ if __name__ == "__main__":
     env = SuperObsEnv(DotDic(cfg))
     # Register env
     register_env(cfg["env_name"], lambda _: SuperObsEnv(DotDic(cfg)))
-    ModelCatalog.register_custom_model("model", SuperObsModel)
+    ModelCatalog.register_custom_model("model", MaskPoEModel)
     ppo_agent = RLlibAgent(cfg, env)
 
     if args.test:
