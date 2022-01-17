@@ -9,42 +9,76 @@ import torch
 import torch.nn as nn
 
 
-class VAE(nn.Module):
+class MVAE(nn.Module):
     """Variational Autoencoder.
     @param n_latents: integer
                       number of latent dimensions
     """
 
-    def __init__(self, n_latents, obs_len, queue_len, hidden_dim, training=True):
+    def __init__(self, n_latents, obs_len, queue_len, hidden_dim, c_group, training=True):
         super().__init__()
         self.obs_len = obs_len
         self.training = training
         self.n_latents = n_latents
+        self.c_group = list(c_group.values())
+        self.PoE = ProductOfExperts()
         # All agents share one encoder and decoder.
         self.belief_encoder = MessageEncoder(n_latents=n_latents, num_embeddings=queue_len + 1, hidden_dim=hidden_dim)
         self.belief_decoder = MessageDecoder(n_latents=n_latents, num_embeddings=queue_len + 1, hidden_dim=hidden_dim)
 
-    def forward(self, obs):
-        obs_recons, mus, logvars = [], [], []
-        obs_app, mus_app, logvars_app = obs_recons.append, mus.append, logvars.append
+    def forward(self, obs, p):
+        _mus, _logvars = [], []
+        _mus_app, _logvars_app = _mus.append, _logvars.append
         for o in obs:
             if o is None:
-                mu, logvar, obs_recon = None, None, None
+                onem_o, onel_o = None, None
             else:
-                _obs_recons, _mus, _logvars = [], [], []
-                _obs_app, _mus_app, _logvars_app = _obs_recons.append, _mus.append, _logvars.append
-                for i in range(self.obs_len):
-                    _mu, _logvar = self.belief_encoder(o[i])
-                    _z = reparametrize(_mu, _logvar, self.training)
-                    _obs_app(self.belief_decoder(_z))
-                    _mus_app(_mu)
-                    _logvars_app(_logvar)
-                mu = torch.cat(_mus, dim=1)
-                logvar = torch.cat(_logvars, dim=1)
-                obs_recon = torch.cat(_obs_recons, dim=1)
-            obs_app(obs_recon)
-            mus_app(mu)
-            logvars_app(logvar)
+                onem_o, onel_o = self.belief_encoder(o)  # bx64
+                onem_o = onem_o.view(1, 2, -1)  # bx2x32
+                onel_o = onel_o.view(1, 2, -1)  # bx2x32
+
+            _mus_app(onem_o)  # [bx2x32]xn
+            _logvars_app(onel_o)  # [bx2x32]xn
+
+        obs_recons, mus, logvars = [], [], []
+        obs_app, mus_app, logvars_app = obs_recons.append, mus.append, logvars.append
+        prior_mu, prior_logvar = prior_expert((1, 1, self.n_latents))
+        for i, mu in enumerate(_mus):
+            tmp_mu, tmp_logvar, tmp_reobs = [], [], []
+            tmp_muapp, tmp_logvarapp, tmp_reobsapp = tmp_mu.append, tmp_logvar.append, tmp_reobs.append
+            if mu is None:
+                mus_app(None)
+                logvars_app(None)
+                obs_app(None)
+            else:
+                if p[i][0] < 0.5:
+                    z = reparametrize(mu, _logvars[i], self.training)  # bx2x32
+                    r_obs = self.belief_decoder(z)  # bx2x6
+                    mus_app(mu.view(1, -1))
+                    logvars_app(_logvars[i].view(1, -1))
+                    obs_app(r_obs.view(1, -1))
+                    continue
+                for j in range(2):
+                    poem = [prior_mu, mu[:, j, :].unsqueeze(1)]
+                    poel = [prior_logvar, _logvars[i][:, j, :].unsqueeze(1)]
+                    for others in self.c_group[i][j]:
+                        id_schedueler = others[0]
+                        id_obs = others[1]
+                        if _mus[id_schedueler] is None:
+                            poem.append(torch.zeros((1,1,6)))
+                            poel.append(torch.zeros((1,1,6))) 
+                        else:
+                            poem.append(_mus[id_schedueler][:, id_obs, :].unsqueeze(1))
+                            poel.append(_logvars[id_schedueler][:, id_obs, :].unsqueeze(1))
+                    pd_mu, pd_logvar = self.PoE(torch.cat(poem, dim=1), torch.cat(poel, dim=1), dim=1)  # bx32
+                    z = reparametrize(pd_mu, pd_logvar, self.training)  # bx32
+                    tmp_muapp(pd_mu)
+                    tmp_logvarapp(pd_logvar)
+                    tmp_reobsapp(self.belief_decoder(z))
+                mus_app(torch.cat(tmp_mu, dim=1))
+                logvars_app(torch.cat(tmp_logvar, dim=1))
+                obs_app(torch.cat(tmp_reobs, dim=1))
+
         return obs_recons, mus, logvars
 
 
@@ -61,17 +95,17 @@ class MessageEncoder(nn.Module):
         self.n_latents = n_latents
 
         self.net = nn.Sequential(
-            nn.Embedding(num_embeddings, hidden_dim),
+            nn.Linear(2, hidden_dim),
             Swish(),
             nn.Linear(hidden_dim, hidden_dim),
             Swish(),
-            nn.Linear(hidden_dim, n_latents * 2))
+            nn.Linear(hidden_dim, n_latents * 2 * 2))
 
         self.net.apply(init_weights)
 
     def forward(self, x):
-        n_latents = self.n_latents
-        x = self.net(x.long())
+        n_latents = 2 * self.n_latents
+        x = self.net(x.float())
         x = x.view((-1, 2 * n_latents))
         return x[:, :n_latents], x[:, n_latents:]
 
@@ -88,8 +122,6 @@ class MessageDecoder(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_latents, hidden_dim),
-            Swish(),
-            nn.Linear(hidden_dim, hidden_dim),
             Swish(),
             nn.Linear(hidden_dim, hidden_dim),
             Swish(),
@@ -142,8 +174,10 @@ class ProductOfExperts(nn.Module):
     def forward(self, mu, logvar, eps=1e-8, dim=-1, weighting=False):
         normalized_weights = 1
         if weighting:
+            shape = logvar.shape
             # computing weight
-            weight_matrix = torch.clamp(0.5 * (logvar[:, 0, :].unsqueeze(1) - logvar + eps), min=0)
+            _, prior_logvar = prior_expert((shape[0], 1, shape[2]))
+            weight_matrix = torch.clamp(0.5 * (prior_logvar - logvar + eps), min=0)
             sum_weights = torch.sum(weight_matrix, keepdim=True, dim=dim)
             normalized_weights = weight_matrix / sum_weights
         var = torch.exp(logvar) + eps

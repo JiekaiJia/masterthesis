@@ -70,6 +70,7 @@ class PartialAccessScenario(BasicScenario):
                 obs_id_app(chosen_server.id)
                 scheduler_obs_app(chosen_server)
                 chosen_server.access_schedulers.append(scheduler)
+
         # todo: for now each server can only be truly observed by one scheduler.
         #  In future, let multiple schedulers observe true queue length.
         # Setting at least one scheduler for each server, which can get real-time observations.

@@ -1,5 +1,6 @@
 """https://github.com/minqi/learning-to-communicate-pytorch
 This file is used to train belief models."""
+import numpy as np
 import gym
 from ray.tune.registry import register_env
 from tensorboardX import SummaryWriter
@@ -34,12 +35,13 @@ class Arena:
     def create_step_record(self):
         cfg = self.cfg
         n_schdulers = cfg.n_schedulers
-        n_servers = cfg.obs_servers
+        n_servers = cfg.num_obs_servers
         record = DotDic({})
-        record.mu = [torch.zeros(cfg.bs, n_servers*cfg.n_latents) for _ in range(n_schdulers)]
-        record.logvar = [torch.zeros(cfg.bs, n_servers*cfg.n_latents) for _ in range(n_schdulers)]
+        record.mu = [torch.zeros(cfg.bs, n_servers * cfg.n_latents) for _ in range(n_schdulers)]
+        record.logvar = [torch.zeros(cfg.bs, n_servers * cfg.n_latents) for _ in range(n_schdulers)]
         record.obs = [torch.zeros(cfg.bs, n_servers) for _ in range(n_schdulers)]
-        record.decoding_obs = [torch.zeros(cfg.bs, cfg.obs_servers*(cfg.queue_max_len+1)) for _ in range(n_schdulers)]
+        record.r_obs = [torch.zeros(cfg.bs, n_servers) for _ in range(n_schdulers)]
+        record.decoding_obs = [torch.zeros(cfg.bs, n_servers * (cfg.max_q_len + 1)) for _ in range(n_schdulers)]
 
         return record
 
@@ -53,12 +55,13 @@ class Arena:
                 show = False
             self.run_episode(show)
 
-            if e < cfg.annealing_episodes:
-                # compute the KL annealing factor for the current episode in the current epoch
-                annealing_factor = (float(e) / float(cfg.annealing_episodes))
-            else:
-                # by default the KL annealing factor is unity
-                annealing_factor = 1.0
+            # if e < cfg.annealing_episodes:
+            #     # compute the KL annealing factor for the current episode in the current epoch
+            #     annealing_factor = (float(e) / float(cfg.annealing_episodes))
+            # else:
+            #     # by default the KL annealing factor is unity
+            #     annealing_factor = 1.0
+            annealing_factor = 1e-4
 
             loss, recon_cost, kld = self.learn_from_episode(annealing_factor)
 
@@ -87,6 +90,7 @@ class Arena:
         env = self.env
         cfg = self.cfg
         obss = env.reset()
+        belief = None
 
         step = 0
         self.create_episode()
@@ -94,7 +98,9 @@ class Arena:
         while not dones['__all__']:
             self.episode.step_records.append(self.create_step_record())
             try:
-                belief = [sigmoid(obs.squeeze(0).cpu().detach().numpy()) for obs in obss[3]]
+                tmp_obs = [obs.cpu().detach().numpy().reshape(2, -1) for obs in obss[3]]
+                norm_obs = [(obs-np.min(obs, axis=1).reshape(2, 1))/(np.max(obs, axis=1).reshape(2, 1)-np.min(obs, axis=1).reshape(2, 1) + 1e-8) for obs in tmp_obs]
+                belief = [(obs/np.sum(obs, axis=1).reshape(2, 1)).reshape(-1) for obs in norm_obs]
                 obss = {scheduler: obs for scheduler, obs in zip(env.schedulers, belief)}
             except KeyError:
                 pass
@@ -102,7 +108,7 @@ class Arena:
             actions = self.policy.agent.compute_actions(obss, policy_id='shared')
 
             obss, r, dones, info = env.step(actions)
-            recon_obs = [torch.argmax(F.softmax(decoding_obs.view((self.cfg.obs_servers, -1)), dim=1), dim=1)
+            recon_obs = [torch.argmax(F.softmax(decoding_obs.view((self.cfg.num_obs_servers, -1)), dim=1), dim=1)
                          for decoding_obs in obss[1]]
             if show:
                 print('timestep:', step+1)
@@ -110,16 +116,18 @@ class Arena:
                 print('obs:', obss[0])
                 print('recon_obs:', recon_obs)
                 print('real_obs:', obss[2])
-                print('decoding_obs:', obss[1])
-                print('mu:', obss[3])
-                print('logvar:', obss[4])
-                print('rewards:', r)
+                print("belief", belief)
+                # print('decoding_obs:', obss[1])
+                # print('mu:', obss[3])
+                # print('logvar:', obss[4])
+                # print('rewards:', r)
                 # print('dones:', dones)
                 # # print('messages:', info)
                 print('_' * 80)
             for b in range(cfg.bs):
                 for i in range(cfg.n_schedulers):
                     self.episode.step_records[step].obs[i][b, :] = obss[0][i]
+                    self.episode.step_records[step].r_obs[i][b, :] = obss[2][i]
                     self.episode.step_records[step].decoding_obs[i][b, :] = obss[1][i]
                     self.episode.step_records[step].mu[i][b, :] = obss[3][i]
                     self.episode.step_records[step].logvar[i][b, :] = obss[4][i]
@@ -143,7 +151,7 @@ class Arena:
         episode = self.episode
         for step in range(episode.steps):
             ELBO, recon_cost, kld = self.elbo_loss(episode.step_records[step].decoding_obs,
-                                                   episode.step_records[step].obs,
+                                                   episode.step_records[step].r_obs,
                                                    episode.step_records[step].mu,
                                                    episode.step_records[step].logvar,
                                                    annealing_factor=annealing_factor)
@@ -169,19 +177,20 @@ class Arena:
         @param annealing_factor: float [default: 1]
                                  Beta - how much to weight the KL regularizer.
         """
+        num_obs_servers = self.cfg.num_obs_servers
         n_agents = len(decoding_obs)
         recon_cost = 0  # reconstruction cost
         kld = 0
         # n agents
         for ix in range(n_agents):
-            for j in range(self.cfg.obs_servers):
-                recon_cost += self.criterion(decoding_obs[ix].view((self.cfg.obs_servers, -1))[j, :].unsqueeze(0),
+            for j in range(num_obs_servers):
+                recon_cost += self.criterion(decoding_obs[ix].view((num_obs_servers, -1))[j, :].unsqueeze(0),
                                              target[ix][:, j].long())
             # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
             # https://arxiv.org/abs/1312.6114
             kld += -0.5 * torch.sum(1 + logvar[ix] - mu[ix].pow(2) - logvar[ix].exp(), dim=1)
-        ELBO = (recon_cost + annealing_factor * kld)/(n_agents*self.cfg.obs_servers)
-        return ELBO, recon_cost/(n_agents*self.cfg.obs_servers), kld/(n_agents*self.cfg.obs_servers)
+        ELBO = (recon_cost + annealing_factor * kld)/(n_agents*num_obs_servers)
+        return ELBO, recon_cost/(n_agents*num_obs_servers), kld/(n_agents*num_obs_servers)
 
     def write_grad(self):
         self.model.show_grad()
@@ -229,9 +238,9 @@ if __name__ == '__main__':
     # Register env
     register_env(cfg['env_name'], lambda _: RLlibEnv(DotDic(cfg)))
     ppo_agent = RLlibAgent(cfg, env)
-
-    path = None
+    path = "/content/drive/MyDrive/DataScience/pythonProject/masterthesis/ray_results/PPO_belief/PPO_rllib_network-v0_a8ec7_00000_0_2022-01-17_15-46-39/checkpoint_000050/checkpoint-50"
     ppo_agent.load(path)
+
     env = gym.make(id="main_network-v0", cfg=DotDic(cfg))
     arena = Arena(DotDic(cfg), env, ppo_agent)
 

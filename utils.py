@@ -25,8 +25,11 @@ def index(a, x):
 
 def sigmoid(x):
     """x is a scalar, if want to extend to vector use map. return a list."""
-    if len(x) > 1:
-        return [1/(1 + math.exp(-_x)) for _x in x]
+    try:
+        if len(x) > 1:
+            return [1/(1 + math.exp(-_x)) for _x in x]
+    except TypeError:
+        pass
     return [1/(1 + math.exp(-x))]
 
 

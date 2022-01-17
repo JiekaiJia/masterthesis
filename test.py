@@ -1,8 +1,10 @@
+"""Test file for JSQ and random policy."""
+
 import json
 import time
-
 import numpy as np
 import scipy.stats as st
+from scipy.special import softmax
 import tqdm
 
 from custom_env.environment import MainEnv
@@ -11,7 +13,7 @@ import policies
 from utils import DotDic
 
 
-logger = get_logger(__name__, 'policy_test.log')
+logger = get_logger(__name__, f'policy_test_{str(time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime()))}.log')
 
 
 if __name__ == '__main__':
@@ -33,13 +35,18 @@ if __name__ == '__main__':
     std_episode_rewards, std_episode_length, std_drp_pkg_rate = [], [], []
     # act_frequencies = args.act_frequency
     act_frequencies = range(6)
+    # act_frequencies = [0]
     for act_frequency in act_frequencies:
         episode_rewards, episode_length, episode_drp_pkg_rate = [], [], []
         config.act_frequency = act_frequency
         # Initialize Environment
         env = MainEnv(config)
         # Initialize Policy
-        policy = policies.RandomPolicy(config, env)
+        policy = policies.JSQPolicy(config, env)
+        # intention map
+        intention_map = np.zeros((6, 6))
+        counter = np.zeros((6, 6))
+
         logger.info(f'{policy.__class__.__name__} start running!!')
         num_e = 120
         for _ in tqdm.tqdm(range(num_e)):
@@ -50,7 +57,12 @@ if __name__ == '__main__':
             drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
             while not dones['__all__']:
                 # print('timestep:', step + 1)
-                actions = {scheduler: policy.compute_gactions(obs) for scheduler, obs in real_obss.items()}
+                actions = {scheduler: policy.compute_actions(obs) for scheduler, obs in real_obss.items()}
+                if "scheduler_1" in real_obss:
+                    o = real_obss["scheduler_1"]
+                    intention_map[o[0], o[1]] += softmax(actions["scheduler_1"])[0]
+                    counter[o[0], o[1]] += 1
+
                 obss, r, dones, info = env.step(actions)
                 _obss = obss
                 obss = {scheduler: obs[0] for scheduler, obs in _obss.items()}
@@ -81,7 +93,10 @@ if __name__ == '__main__':
         print(f'total mean dropped packages rate: {total_drp_pkg_rate[-1]}, std_drp_pkg_rate: {std_drp_pkg_rate[-1]}')
         print(f'Runtime: {end-start}S')
 
+    intention_map /= (counter+1e-8)
     print('Summary:')
     logger.info(f'act_frequency{tuple([i for i in act_frequencies])}')
     logger.info(f'mean_episode_rewards: {tuple(mean_episode_rewards)}, std episode rewards: {tuple(std_episode_rewards)}')
     logger.info(f'total_drp_pkg_rate: {tuple(total_drp_pkg_rate)}, std_drp_pkg_rate: {tuple(std_drp_pkg_rate)}')
+    logger.info(f'intention map:{intention_map}')
+    logger.info(f'counts for each combination {counter}')

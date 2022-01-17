@@ -2,14 +2,14 @@ import copy
 import logging
 
 import gym
-from gym.spaces import Box, Dict, Tuple
+from gym.spaces import Box, Discrete, Dict, Tuple
 from gym.utils import seeding
 import numpy as np
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from scipy.special import softmax
 import torch
 
-from model_components import VAE
+from model_components import MVAE
 from scenario import PartialAccessScenario
 from utils import sigmoid
 
@@ -21,7 +21,7 @@ class BasicNetwork(gym.Env):
         self.seed(2021)
         self.scenario = scene_cls(cfg)
         self.act_frequency = cfg.act_frequency
-        self.num_schedulers = cfg.num_schedulers
+        self.num_schedulers = cfg.n_schedulers
         self.servers = [server.name for server in self.scenario.servers]
         self.schedulers = [scheduler.name for scheduler in self.scenario.schedulers]
         self.index_map = {scheduler: idx for idx, scheduler in enumerate(self.schedulers)}
@@ -34,6 +34,7 @@ class BasicNetwork(gym.Env):
     def reset(self):
         self.rewards = {}
         self.schedulers = [scheduler.name for scheduler in self.scenario.schedulers]
+        self.p = []
         self.infos = {scheduler: None for scheduler in self.schedulers}
         self.dones = {scheduler: False for scheduler in self.schedulers}
         self.acc_drop_pkgs = {scheduler: 0 for scheduler in self.schedulers}
@@ -181,9 +182,9 @@ class DelayedNetwork(BasicNetwork):
             # print("do actions")
             self.local_steps = 0
             # Make sure action dimension to be correct.
-            for k, v in actions.items():
-                assert len(v) == self.action_spaces[k].shape[0], "Wrong action dimension!!"
-                break
+            # for k, v in actions.items():
+            #     assert len(v) == self.action_spaces[k].shape[0], f"Wrong action dimension!! Expected {self.action_spaces[k].shape[0]}, got {len(v)}"
+            #     break
             # Set the current action distribution.
             for scheduler, action in actions.items():
                 self.current_actions[scheduler] = action
@@ -208,27 +209,51 @@ class BeliefNetwork(DelayedNetwork):
     def __init__(self, cfg, scene_cls):
         super().__init__(cfg, scene_cls)
         self.belief_training = cfg.belief_training
+        self.obs_server_id = self.scenario.obs_server_id
 
         # set observation spaces.
-        for scheduler in self.scenario.schedulers:
+        action_dim = self.scenario.dim_a
+        for scheduler in self.schedulers:
+            # Action is the probability distribution sending packages to servers.
+            self.action_spaces[scheduler] = Box(low=0, high=1, shape=(action_dim+1,), dtype=np.float32)
             # Belief as observation, the scheduler thinks how many packages are in the queue.
-            self.observation_spaces[scheduler.name] = Box(low=float("-inf"), high=float("inf"),
+            self.observation_spaces[scheduler] = Box(low=float("-inf"), high=float("inf"),
                                                                      shape=(cfg.n_latents*cfg.num_obs_servers,),
                                                                      dtype=np.float32)
+        self.c_group = {}
+        for scheduler in self.schedulers:
+            self.c_group[scheduler] = []  # [[(),()], [(),()]]
+            me_app = self.c_group[scheduler].append
+            obs_id = self.obs_server_id[scheduler]
+            for id in obs_id:
+                l = []
+                l_app = l.append
+                for i, other in enumerate(self.schedulers):
+                    if other != scheduler:
+                        other_obs_id = self.obs_server_id[other]
+                        if id in other_obs_id:
+                            pos = other_obs_id.index(id)
+                            l_app((i, pos))
+                me_app(l)
 
-        self.model = VAE(cfg.n_latents, cfg.num_obs_servers, cfg.max_q_len,
-                         cfg.belief_hidden_dim, training=self.belief_training)
+        self.model = MVAE(cfg.n_latents, cfg.num_obs_servers, cfg.max_q_len,
+                         cfg.belief_hidden_dim, c_group=self.c_group, training=self.belief_training)
 
-        if not self.belief_training or cfg.restore_from:
+        if not self.belief_training:
             try:
                 # Must use absolute path, otherwise the other actors except main actor can"t find model parameters.
-                self.model.load_state_dict(torch.load(cfg.restore_from)["state_dict"])
+                # self.model.load_state_dict(torch.load(cfg.restore_from)["state_dict"])
+                self.model.load_state_dict(torch.load("/content/drive/MyDrive/DataScience/pythonProject/masterthesis/model_states/belief_encoder3_3955_109.81.pth")["state_dict"])
                 print("The model restores from the trained model.")
             except FileNotFoundError:
                 print("No existed trained model, using initial parameters.")
 
     def step(self, actions):
-        observations, rewards, dones, infos = super().step(actions)
+        _actions = {}
+        for k, v in actions.items():
+            _actions[k] = v[:-1]
+            self.p.append(sigmoid(v[-1]))
+        observations, rewards, dones, infos = super().step(_actions)
         # Transform observations to NxL tensors, where N is the number of schedulers
         # and L is the length of observations.
         obs = [None] * self.num_schedulers
@@ -239,11 +264,11 @@ class BeliefNetwork(DelayedNetwork):
 
         if self.belief_training:
             self.model.train()
-            decoding, mu, logvar = self.model(obs)
+            decoding, mu, logvar = self.model(obs, self.p)
         else:
             self.model.eval()
             with torch.no_grad():
-                decoding, mu, logvar = self.model(obs)
+                decoding, mu, logvar = self.model(obs, self.p)
 
         return (obs, decoding, real_obs, mu, logvar), self.rewards, self.dones, self.infos
 
@@ -326,56 +351,19 @@ class RLlibEnv(MultiAgentEnv):
         self.schedulers = env.schedulers
         dones_ = {k: dones[k] for k in self.schedulers}
         dones_["__all__"] = all(dones.values())
+        # infos = {k: obss[k][1] for k in self.schedulers}
         infos = {k: {"done": dones[k]} for k in self.schedulers}
         if self.use_belief:
-            new_obs = {scheduler: sigmoid(torch.cat(obss[3][env.index_map[scheduler]], dim=0).cpu().numpy())
-                       for scheduler in self.schedulers}
+            tmp_obs = [obs.cpu().detach().numpy().reshape(2, -1) if obs is not None else None for obs in obss[3]]
+            norm_obs = [(obs - np.min(obs, axis=1).reshape(2, 1)) / (
+                        np.max(obs, axis=1).reshape(2, 1) - np.min(obs, axis=1).reshape(2, 1) + 1e-8) if obs is not None else None for obs in
+                        tmp_obs]
+            belief = [(obs / np.sum(obs, axis=1).reshape(2, 1)).reshape(-1) if obs is not None else None for obs in norm_obs]
+            new_obs = {scheduler: belief[env.index_map[scheduler]] if belief[env.index_map[scheduler]] is not None else np.zeros((12,)) for scheduler in self.schedulers}
         else:
-            new_obs = {k: v[1] for k, v in obss.items()}
+            new_obs = {k: v[0] for k, v in obss.items()}
         # ("real_obs:", {k: v[1] for k, v in obss.items()})
         return new_obs, new_rews, dones_, infos
-
-
-class SuperAgentEnv(gym.Env):
-    def __init__(self, cfg):
-        self.seed(2021)
-
-        self.cfg = cfg
-        self.raw_env = DelayedNetwork(cfg, PartialAccessScenario)
-        self.schedulers = self.raw_env.schedulers
-
-        agent_observation_space = self.raw_env.observation_spaces[self.schedulers[0]]
-        # self.observation_space = spaces.Dict({"agents": spaces.Tuple((agent_observation_space,) * self.cfg.n_schedulers)})
-        self.observation_space = Tuple((agent_observation_space,) * self.cfg.n_schedulers)
-        agent_action_space = self.raw_env.action_spaces[self.schedulers[0]]
-        self.action_space = Tuple((agent_action_space,) * self.cfg.n_schedulers)
-
-    def seed(self, seed=None):
-        self.random_state, seed = seeding.np_random(seed)
-        return [seed]
-
-    def reset(self):
-        """Resets the env and returns observations from ready agents.
-        Returns:
-            obs_dict: New observations for each ready agent.
-        """
-        obss = self.raw_env.reset()
-        self.schedulers = self.raw_env.schedulers
-        self.acc_drop_pkgs = self.raw_env.acc_drop_pkgs
-        new_obss = tuple(obss.values())
-
-        return new_obss
-
-    def step(self, actions):
-        act_dict = {scheduler: actions[i] for i, scheduler in enumerate(self.schedulers)}
-        env = self.raw_env
-        obss, rews, dones, infos = env.step(act_dict)
-        all_rewards = sum(rews.values())
-        done = all(dones.values())
-        info = {"rewards": rews}
-        obs = {k: v[0] for k, v in obss.items()}
-        # ("real_obs:", {k: v[1] for k, v in obss.items()})
-        return tuple(obs.values()), all_rewards, done, info
 
 
 class SuperObsEnv(MultiAgentEnv):
@@ -399,8 +387,11 @@ class SuperObsEnv(MultiAgentEnv):
         for scheduler in self.schedulers:
             self.observation_spaces[scheduler] = Dict(
                 {"self": agent_observation_space,
+                 "self_id": Box(low=0, high=self.num_schedulers, shape=(1, ), dtype=np.int32),
                  "real_obs": agent_observation_space,
                  "others": Tuple((agent_observation_space,) * (self.num_schedulers - 1)),
+                 # "others_real_obs": Tuple((agent_observation_space,) * (self.num_schedulers - 1)),
+                 "other_ids": Box(low=0, high=self.num_schedulers, shape=(self.num_schedulers - 1, ), dtype=np.int32),
                  "obs_mask": Tuple(
                      (Tuple(
                          (Box(low=0, high=1, shape=(num_obs_servers, ), dtype=np.int32),)
@@ -434,10 +425,14 @@ class SuperObsEnv(MultiAgentEnv):
         """
         obss = self.raw_env.reset()
         self.schedulers = self.raw_env.schedulers
+        self.id_map = {scheduler: i for i, scheduler in enumerate(self.schedulers)}
         self.acc_drop_pkgs = self.raw_env.acc_drop_pkgs
         new_obss = {scheduler: {"self": np.asarray(obs, dtype=np.int32),
+                                "self_id": np.asarray([self.id_map[scheduler]], dtype=np.int32),
                                 "real_obs": np.asarray(obs, dtype=np.int32),
                                 "others": tuple((np.zeros_like(obs, dtype=np.int32),)*(self.num_schedulers-1)),
+                                # "others_real_obs": tuple((np.zeros_like(obs, dtype=np.int32),)*(self.num_schedulers-1)),
+                                "other_ids": np.asarray([self.id_map[other] for other in self.schedulers if other != scheduler], dtype=np.int32),
                                 "obs_mask": tuple(self.obs_mask[scheduler]),
                                 } for scheduler, obs in obss.items()}
 
@@ -464,8 +459,10 @@ class SuperObsEnv(MultiAgentEnv):
                         others_app(np.zeros_like(obs[0], dtype=np.int32))
             # Update the new observations.
             new_obss[scheduler] = {"self": np.asarray(obs[0], dtype=np.int32),
+                                   "self_id": np.asarray([self.id_map[scheduler]], dtype=np.int32),
                                    "real_obs": np.asarray(obs[1], dtype=np.int32),
                                    "others": tuple(others),
+                                   "other_ids": np.asarray([self.id_map[other] for other in self.init_schedulers if other != scheduler], dtype=np.int32),
                                    "obs_mask": tuple(self.obs_mask[scheduler]),}
         # ("real_obs:", {k: v[1] for k, v in obss.items()})
         return new_obss, new_rews, dones_, infos

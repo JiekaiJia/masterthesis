@@ -6,12 +6,14 @@ from ray.rllib.agents.registry import get_trainer_class
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
 import scipy.stats as st
+from scipy.special import softmax
 import torch
 import tqdm
 
-from custom_env.environment import RLlibEnv, SuperObsEnv
+from custom_env.environment import SuperObsEnv
 from custom_PPO import PPOTrainer
-from RLlib_custom_models import MaskPoEModel, SuperObsRNNModel, CommnetModel
+from RLlib_custom_models import (
+    MaskPoEModel, CommnetModel, BicnetModel, MaskRNNPoEModel, MaskSPoEModel)
 from logger import get_logger
 from utils import DotDic, sigmoid
 
@@ -58,6 +60,7 @@ class RLlibAgent:
                 "n_latents": cfg["n_latents"],
                 "hidden_dim": cfg["PPO_hidden_dim"],
             },
+            "max_seq_len": 1
         }
         config["framework"] = "torch"
 
@@ -97,7 +100,7 @@ class RLlibAgent:
         # Train
         analysis = ray.tune.run(
             # self.cfg["alg_name"] if self.cfg["silent"] else PPOTrainer,
-            self.cfg["alg_name"],
+            PPOTrainer,
             stop=self.stop_criteria,
             config=self.set_config(),
             name=self.cfg["experiment_name"],
@@ -124,9 +127,9 @@ class RLlibAgent:
         Load a trained RLlib agent from the specified path. Call this before testing a trained agent.
         :param path: Path pointing to the agent"s saved checkpoint (only used for RLlib agents)
         """
-        conf = self.cfg
-        trainer_cls = get_trainer_class(conf["alg_name"])
-        self.agent = trainer_cls(config=self.set_config(), env=conf["env_name"])
+        cfg = self.cfg
+        trainer_cls = get_trainer_class(cfg["alg_name"])
+        self.agent = trainer_cls(config=self.set_config(), env=cfg["env_name"])
         if path:
             self.agent.restore(path)
 
@@ -135,66 +138,84 @@ class RLlibAgent:
         mean_episode_rewards, mean_episode_length, total_drp_pkg_rate, mean_comm_count = [], [], [], []
         std_episode_rewards, std_episode_length, std_drp_pkg_rate, std_comm_count = [], [], [], []
         # act_frequencies = args.act_frequency
-        act_frequencies = range(6)
+        # act_frequencies = range(6)
+        act_frequencies = [0]
         for act_frequency in act_frequencies:
             episode_rewards, episode_length, episode_drp_pkg_rate, episode_comm_count = [], [], [], []
             self.cfg["act_frequency"] = act_frequency
             # instantiate env class
-            env = RLlibEnv(DotDic(self.cfg))
+            env = SuperObsEnv(DotDic(self.cfg))
+            # intention map
+            intention_map = np.zeros((6, 6))
+            counter = np.zeros((6, 6))
             # run until episode ends
             num_e = 120
             for _ in tqdm.tqdm(range(num_e)):
                 obss = env.reset()
                 episode_reward, step, comm_count = 0, 0, 0
-                dones = {"__all__": False}
+                dones = {'__all__': False}
                 drop_pkg = {scheduler: 0 for scheduler in env.schedulers}
-                while not dones["__all__"]:
+                while not dones['__all__']:
                     step += 1
-                    # logger.info(f"timestep: {step}")
-                    actions = self.agent.compute_actions(obss, policy_id="shared")
-                    logger.info(f"actions: {actions}")
-                    for k, a in actions.items():
-                        p = sigmoid(a[self.cfg["obs_servers"]:])
-                        for _p in p:
-                            if _p > 0.5:
-                                comm_count += 1
+                    # logger.info(f'timestep: {step}')
+                    actions = self.agent.compute_actions(obss, policy_id='shared')
+                    # if "scheduler_1" in obss:
+                    #     o = obss["scheduler_1"]["real_obs"]
+                    #     intention_map[o[0], o[1]] += softmax(actions["scheduler_1"])[0]
+                    #     counter[o[0], o[1]] += 1
+                    if "scheduler_1" in obss:
+                        o = obss["scheduler_1"]["real_obs"]
+                        p = softmax(actions["scheduler_1"])[0]
+                        if p > 0.5:
+                            intention_map[o[0], o[1]] += 1
+                        counter[o[0], o[1]] += 1
+
+                    # logger.info(f'actions: {actions}')
+                    # for k, a in actions.items():
+                    #     p = sigmoid(a[self.conf['obs_servers']:])
+                    #     for _p in p:
+                    #         if _p > 0.5:
+                    #             comm_count += 1
                     obss, rewards, dones, infos = env.step(actions)
-                    # logger.info(f"obs: {obss}")
-                    # logger.info(f"reward: {reward}")
-                    # logger.info("-"*40)
+                    # logger.info(f'obs: {obss}')
+                    # logger.info(f'reward: {reward}')
+                    # logger.info('-'*40)
                     for k, v in rewards.items():
                         episode_reward += v
                 for k, v in env.acc_drop_pkgs.items():
                     drop_pkg[k] += v
                 episode_length.append(step)
                 episode_rewards.append(episode_reward)
-                episode_comm_count.append(comm_count / (self.cfg["n_schedulers"] * self.cfg["comm_act_dim"] * step))
-                episode_drp_pkg_rate.append(sum(drop_pkg.values()) / (len(drop_pkg) * self.cfg["n_packages"]))
+                # episode_comm_count.append(comm_count/(self.conf['n_schedulers']*self.conf['comm_act_dim']*step))
+                episode_drp_pkg_rate.append(sum(drop_pkg.values()) / (len(drop_pkg) * self.cfg['n_packages']))
             mean_r = np.mean(episode_rewards)
             mean_p = np.mean(episode_drp_pkg_rate)
-            mean_c = np.mean(episode_comm_count)
-            mean_comm_count.append(mean_c)
-            std_comm_count.append(
-                st.t.interval(0.95, len(episode_comm_count) - 1, loc=mean_c, scale=st.sem(episode_comm_count))
-            )
+            # mean_c = np.mean(episode_comm_count)
+            # mean_comm_count.append(mean_c)
+            # std_comm_count.append(
+            #     st.t.interval(0.95, len(episode_comm_count) - 1, loc=mean_c, scale=st.sem(episode_comm_count))
+            # )
             mean_episode_rewards.append(mean_r)
             std_episode_rewards.append(
                 st.t.interval(0.95, len(episode_rewards) - 1, loc=mean_r, scale=st.sem(episode_rewards)))
             total_drp_pkg_rate.append(mean_p)
             std_drp_pkg_rate.append(
                 st.t.interval(0.95, len(episode_drp_pkg_rate) - 1, loc=mean_p, scale=st.sem(episode_drp_pkg_rate)))
-            print(f"act_frequency: {act_frequency}")
-            print(f"mean episode rewards: {mean_episode_rewards[-1]}, std episode rewards: {std_episode_rewards[-1]}")
-            print(f"communication rate: {mean_comm_count[-1]}")
+            print(f'act_frequency: {act_frequency}')
+            print(f'mean episode rewards: {mean_episode_rewards[-1]}, std episode rewards: {std_episode_rewards[-1]}')
+            # print(f'communication rate: {mean_comm_count[-1]}')
             print(
-                f"total mean dropped packages rate: {total_drp_pkg_rate[-1]}, std_drp_pkg_rate: {std_drp_pkg_rate[-1]}")
+                f'total mean dropped packages rate: {total_drp_pkg_rate[-1]}, std_drp_pkg_rate: {std_drp_pkg_rate[-1]}')
 
-        print("Summary:")
-        logger.info(f"act_frequency{tuple([i for i in act_frequencies])}")
+        intention_map /= (counter + 1e-8)
+        print('Summary:')
+        logger.info(f'act_frequency{tuple([i for i in act_frequencies])}')
         logger.info(
-            f"mean_episode_rewards: {tuple(mean_episode_rewards)}, std episode rewards: {tuple(std_episode_rewards)}")
-        logger.info(f"total_drp_pkg_rate: {tuple(total_drp_pkg_rate)}, std_drp_pkg_rate: {tuple(std_drp_pkg_rate)}")
-        logger.info(f"communication rate: {mean_comm_count}, std_comm_rate: {std_comm_count}")
+            f'mean_episode_rewards: {tuple(mean_episode_rewards)}, std episode rewards: {tuple(std_episode_rewards)}')
+        logger.info(f'total_drp_pkg_rate: {tuple(total_drp_pkg_rate)}, std_drp_pkg_rate: {tuple(std_drp_pkg_rate)}')
+        # logger.info(f'communication rate: {mean_comm_count}, std_comm_rate: {std_comm_count}')
+        logger.info(f'intention map:{intention_map}')
+        logger.info(f'counts for each combination {counter}')
 
     def shutdown(self):
         ray.shutdown()
@@ -248,10 +269,8 @@ if __name__ == "__main__":
     if args.test:
         # analysis = ppo_agent.load_exp_results(f"./ray_results/{conf["experiment_name"]}")
         # path = ppo_agent.get_checkpoints_path(analysis)
-        path = None
-        # path = "/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO_noComm/PPO_rllib_network-v0_bda74_00000_0_2021-11-12_23-10-35/checkpoint_000350/checkpoint-350"
-        # path = "/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_671d9_00000_0_2021-11-14_21-47-03/checkpoint_000700/checkpoint-700"
-        # path = "/content/drive/MyDrive/Data Science/pythonProject/masterthesis/ray_results/PPO/PPO_rllib_network-v0_7690b_00000_0_2021-11-16_16-44-27/checkpoint_000350//checkpoint-350"
+        # path = None
+        path = "/content/drive/MyDrive/DataScience/pythonProject/masterthesis/ray_results/PPO_1e-6autoencoder1e-4_delhiddens/CustomPPO_rllib_network-v0_79879_00000_0_2022-01-05_00-00-21/checkpoint_000300/checkpoint-300"
         ppo_agent.load(path)
         ppo_agent.test()
     else:
