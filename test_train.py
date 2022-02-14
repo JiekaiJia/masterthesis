@@ -13,7 +13,7 @@ import tqdm
 from custom_env.environment import SuperObsEnv
 from custom_PPO import PPOTrainer
 from RLlib_custom_models import (
-    MaskPoEModel, CommnetModel, BicnetModel, MaskRNNPoEModel, MaskSPoEModel)
+    MaskPoEModel, CommnetModel, BicnetModel, MaskRNNPoEModel, MaskSPoEModel, MaskAttPoEModel)
 from logger import get_logger
 from utils import DotDic, sigmoid
 
@@ -44,11 +44,11 @@ class RLlibAgent:
 
         # === Settings for Rollout Worker processes ===
         # Use GPUs if `RLLIB_NUM_GPUS` env var set to > 0.
-        # config["num_gpus"] = 1
+        config["num_gpus"] = 1
         # int(os.environ.get("RLLIB_NUM_GPUS", "0"))
         # config["num_gpus_per_worker"] = (1-0.0001)/3
         # Number of rollout worker actors to create for parallel sampling.
-        config["num_workers"] = cfg["num_workers"]  # euler 20
+        config["num_workers"] = cfg["num_workers"]
         config["num_envs_per_worker"] = cfg["num_envs_per_worker"]
 
         # === Settings for the Trainer process ===
@@ -256,14 +256,14 @@ if __name__ == "__main__":
         cfg["num_workers"] = 0
         cfg["num_envs_per_worker"] = 1
     else:
-        cfg["num_workers"] = 2
-        cfg["num_envs_per_worker"] = 10
+        cfg["num_workers"] = 3
+        cfg["num_envs_per_worker"] = 7
 
     # Create test environment.
     env = SuperObsEnv(DotDic(cfg))
     # Register env
     register_env(cfg["env_name"], lambda _: SuperObsEnv(DotDic(cfg)))
-    ModelCatalog.register_custom_model("model", MaskPoEModel)
+    ModelCatalog.register_custom_model("model", MaskAttPoEModel)
     ppo_agent = RLlibAgent(cfg, env)
 
     if args.test:

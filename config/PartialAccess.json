@@ -15,7 +15,7 @@
 
   "_comment2": "belief model training setting",
   "belief_training": false,
-  "n_latents": 6,
+  "n_latents": 32,
   "nepisodes": 10000,
   "lr": 1e-4,
   "annealing_episodes": 2000,

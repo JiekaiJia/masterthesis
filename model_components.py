@@ -171,20 +171,12 @@ class ProductOfExperts(nn.Module):
     @param logvar: B x M x D for M experts
     """
 
-    def forward(self, mu, logvar, eps=1e-8, dim=-1, weighting=False):
-        normalized_weights = 1
-        if weighting:
-            shape = logvar.shape
-            # computing weight
-            _, prior_logvar = prior_expert((shape[0], 1, shape[2]))
-            weight_matrix = torch.clamp(0.5 * (prior_logvar - logvar + eps), min=0)
-            sum_weights = torch.sum(weight_matrix, keepdim=True, dim=dim)
-            normalized_weights = weight_matrix / sum_weights
+    def forward(self, mu, logvar, eps=1e-8, dim=-1):
         var = torch.exp(logvar) + eps
         # precision of i-th Gaussian expert at point x
         T = 1. / var
-        pd_mu = torch.sum(mu * normalized_weights * T, dim=dim) / torch.sum(normalized_weights * T, dim=dim)
-        pd_var = 1. / torch.sum(normalized_weights * T, dim=dim)
+        pd_mu = torch.sum(mu * T, dim=dim) / torch.sum(T, dim=dim)
+        pd_var = 1. / torch.sum(T, dim=dim)
         pd_logvar = torch.log(pd_var)
         return pd_mu, pd_logvar
 

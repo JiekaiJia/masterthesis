@@ -1,5 +1,6 @@
 import copy
 import logging
+from abc import ABC
 
 import gym
 from gym.spaces import Box, Discrete, Dict, Tuple
@@ -16,7 +17,7 @@ from utils import sigmoid
 logger = logging.getLogger(__name__)
 
 
-class BasicNetwork(gym.Env):
+class BasicNetwork(gym.Env, ABC):
     def __init__(self, cfg, scene_cls):
         self.seed(2021)
         self.scenario = scene_cls(cfg)
@@ -116,7 +117,7 @@ class BasicNetwork(gym.Env):
         raise NotImplementedError()
 
 
-class DelayedNetwork(BasicNetwork):
+class DelayedNetwork(BasicNetwork, ABC):
     """In this network the schedulers observe queue state with a transmitting delay. This delay will change every
     n steps. Besides, the schedulers only have partial access and observability to the queue."""
 
@@ -202,7 +203,7 @@ class DelayedNetwork(BasicNetwork):
         return self.observe(), self.rewards, self.dones, self.infos
 
 
-class BeliefNetwork(DelayedNetwork):
+class BeliefNetwork(DelayedNetwork, ABC):
     """This network is based on the configurations of DelayedNetwork, and addresses beliefs over queue state
     as observations and messages between agents. Schedulers have a probability to decide whether to receive messages."""
 
@@ -243,7 +244,7 @@ class BeliefNetwork(DelayedNetwork):
             try:
                 # Must use absolute path, otherwise the other actors except main actor can"t find model parameters.
                 # self.model.load_state_dict(torch.load(cfg.restore_from)["state_dict"])
-                self.model.load_state_dict(torch.load("/content/drive/MyDrive/DataScience/pythonProject/masterthesis/model_states/belief_encoder3_3955_109.81.pth")["state_dict"])
+                self.model.load_state_dict(torch.load("/content/drive/MyDrive/DataScience/pythonProject/masterthesis/model_states/belief_encoder3_9591_23.33.pth")["state_dict"])
                 print("The model restores from the trained model.")
             except FileNotFoundError:
                 print("No existed trained model, using initial parameters.")
@@ -273,7 +274,7 @@ class BeliefNetwork(DelayedNetwork):
         return (obs, decoding, real_obs, mu, logvar), self.rewards, self.dones, self.infos
 
 
-class MainEnv(gym.Env):
+class MainEnv(gym.Env, ABC):
     """"""
 
     def __init__(self, cfg):
@@ -477,7 +478,7 @@ class SuperObsEnv(MultiAgentEnv):
 
 
 def make_rllibenv(cls):
-    class RLlibEnv(cls):
+    class Env(cls):
         """This environment deletes the done schedulers during episodes to keep compatible with RLlib."""
 
         def __init__(self, cfg, scene_cls):
@@ -496,4 +497,4 @@ def make_rllibenv(cls):
                 del self.infos[scheduler]
                 self.schedulers.remove(scheduler)
 
-    return RLlibEnv
+    return Env

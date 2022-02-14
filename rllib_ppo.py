@@ -100,7 +100,7 @@ class RLlibAgent:
             checkpoint_at_end=True,
             local_dir=conf['local_dir'],
             checkpoint_freq=conf['checkpoint_freq'],
-            # resume=True
+            resume=True
             # restore='/content/drive/MyDrive/DataScience/pythonProject/masterthesis/ray_results/PPO_2layer64_5agents/PPO_rllib_network-v0_fc878_00000_0_2021-12-31_01-28-41/checkpoint_000200/checkpoint-200'
         )
         return analysis

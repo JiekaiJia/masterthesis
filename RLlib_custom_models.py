@@ -81,7 +81,7 @@ class MaskPoEModel(TorchModelV2, nn.Module):
         me_logvar = me[:, self.n_latents:]
         self.final_mu, self.final_logvar = me_mu, me_logvar
         if not self.silent:
-            prior_mu, prior_logvar = prior_expert((shape[0], 1, self.n_latents))  # bx1x64
+            prior_mu, prior_logvar = prior_expert((shape[0], 1, self.n_latents), use_cuda=torch.cuda.is_available())  # bx1x64
             others_obs = torch.cat([o.unsqueeze(1) for o in obs["others"]], dim=1)  # bxnx2
             digits_masks = [torch.cat([m.unsqueeze(1) for m in mask], dim=1) for mask in obs_mask]
             masked_obs_o = [others_obs * mask for mask in digits_masks]
@@ -513,4 +513,100 @@ class BicnetModel(TorchModelV2, nn.Module):
         action_out = self.action_branch(features)  # bx4
         self.value_features = self.value_layer(r_me_obs)  # bx64
 
+        return action_out, state
+
+
+class MaskAttPoEModel(TorchModelV2, nn.Module):
+    """The network we proposed."""
+    def __init__(self,
+                 obs_space,
+                 action_space,
+                 num_outputs,
+                 model_config,
+                 name,
+                 silent,
+                 n_latents,
+                 hidden_dim,
+                 ):
+        nn.Module.__init__(self)
+        super().__init__(obs_space, action_space, num_outputs, model_config,
+                         name)
+        self.silent = silent
+        self.obs_space = obs_space.original_space
+        self.reconstruct_loss = nn.CrossEntropyLoss(reduction="none")
+        obs_shape = self.obs_space["self"].shape
+        n_latents = obs_shape[0] * n_latents
+        self.n_latents = n_latents
+        # observation encoder.
+        encoder_in = obs_shape[0]
+        self.encoder = MLP([encoder_in, hidden_dim, hidden_dim, 2 * n_latents], last_activation=False)
+        self.decoder = MLP([n_latents, hidden_dim, hidden_dim, 6 * obs_shape[0]], last_activation=False)
+        # communication method
+        self.PoE = ProductOfExperts()
+        # attention network
+        self.att_k = MLP([2 * n_latents, hidden_dim], last_activation="tanh")
+        self.att_q = nn.Linear(hidden_dim, 1, bias=False)
+        # NN main body
+        self.action_branch = nn.Sequential(
+            SlimFC(in_size=hidden_dim,
+                   out_size=num_outputs,
+                   initializer=normc_initializer(0.01),
+                   activation_fn=None))
+        self.value_branch = nn.Sequential(
+            SlimFC(in_size=hidden_dim,
+                   out_size=1,
+                   initializer=normc_initializer(0.01),
+                   activation_fn=None))
+        # Holds the current 'base' output (before logits layer).
+        self.value_features = None
+
+    @override(ModelV2)
+    def value_function(self):
+        assert self.value_features is not None, "must call forward() first"
+        return torch.reshape(self.value_branch(self.value_features), [-1])
+
+    @override(ModelV2)
+    def forward(self, input_dict, state, seq_lens):
+        obs = input_dict["obs"]
+        shape = obs["self"].shape
+        batch_size = shape[0]
+        obs_len = shape[1]
+        obs_mask = obs["obs_mask"]
+        num_others = len(obs["others"])
+
+        me = self.encoder(obs["self"])
+        real_me = self.encoder(obs["real_obs"])
+        me_mu = me[:, :self.n_latents]
+        me_logvar = me[:, self.n_latents:]
+        self.final_mu, self.final_logvar = me_mu, me_logvar
+        if not self.silent:
+            prior_mu, prior_logvar = prior_expert((shape[0], 1, self.n_latents), use_cuda=torch.cuda.is_available())  # bx1x64
+            # Collecting others observations.
+            others_obs = torch.cat([o.unsqueeze(1) for o in obs["others"]], dim=1)  # bxn-1x2
+            digits_masks = [torch.cat([m.unsqueeze(1) for m in mask], dim=1) for mask in obs_mask]
+            masked_obs_o = [others_obs * mask for mask in digits_masks]
+            codes = [self.encoder(o) for o in masked_obs_o]
+            mus = [code[:, :, :self.n_latents].view(batch_size, num_others, obs_len, -1) for code in codes]
+            logvars = [code[:, :, self.n_latents:].view(batch_size, num_others, obs_len, -1) for code in codes]
+            sum_mus = [torch.sum(mu, keepdim=True, dim=2) for mu in mus]
+            sum_logvars = [torch.sum(logvar,  keepdim=True, dim=2) for logvar in logvars]
+            mus_t = torch.cat(sum_mus, dim=2).view(batch_size, num_others, -1)
+            logvars_t = torch.cat(sum_logvars, dim=2).view(batch_size, num_others, -1)  # bxn-1x64
+            # Concatenate current observation and others observation
+            total_k = self.att_k(torch.cat([mus_t, logvars_t], dim=-1))  # bxn-1x64
+            total_q = self.att_q(total_k)  # bxn-1
+            att_weights = torch.softmax(total_q, dim=1)
+            log_att_weights = torch.log(att_weights+1e-8)
+            # Multiply weight to Gaussian
+            weighted_logvars = logvars_t - log_att_weights
+            # Making PoE
+            pd_mu, pd_logvar = self.PoE(torch.cat([prior_mu, mus_t, me_mu.unsqueeze(1)], dim=1),
+                                        torch.cat([prior_logvar, weighted_logvars, me_logvar.unsqueeze(1)], dim=1),
+                                        dim=1)
+            self.final_mu, self.final_logvar = pd_mu, pd_logvar
+        z = reparametrize(self.final_mu, self.final_logvar)
+        self.action_features = z
+        self.predictions = self.decoder(z).view(batch_size, obs_len, -1)
+        self.value_features = real_me[:, :self.n_latents]
+        action_out = self.action_branch(self.action_features)
         return action_out, state

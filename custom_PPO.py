@@ -122,14 +122,13 @@ def ppo_surrogate_loss(
     mean_ELBO = mean_reconstruct_loss + 1e-4*mean_kld_loss
 
     # expressiveness_loss = reduce_mean_valid(-curr_action_dist.logp(train_batch[SampleBatch.ACTIONS]))
-    expressiveness_loss = torch.zeros(1)
+    # expressiveness_loss = torch.zeros(1)
 
     total_loss = reduce_mean_valid(-surrogate_loss +
                                    policy.kl_coeff * action_kl +
                                    policy.config["vf_loss_coeff"] * vf_loss -
                                    policy.entropy_coeff * curr_entropy +
-                                   1e-6 * mean_ELBO +
-                                   1e-5 * expressiveness_loss)
+                                   1e-6 * mean_ELBO)
 
     # Store values for stats function in model (tower), such that for
     # multi-GPU, we do not override them during the parallel loss phase.
@@ -142,7 +141,6 @@ def ppo_surrogate_loss(
     model.tower_stats["mean_kl_loss"] = mean_kl_loss
     model.tower_stats["mean_msg_kl_loss"] = mean_kld_loss
     model.tower_stats["mean_reconstruct_loss"] = mean_reconstruct_loss
-    model.tower_stats["expressiveness_loss"] = expressiveness_loss
     model.tower_stats["mean_ELBO"] = mean_ELBO
 
     return total_loss
@@ -180,8 +178,6 @@ def kl_and_loss_stats(policy: Policy,
             torch.stack(policy.get_tower_stats("mean_reconstruct_loss"))),
         "mean_ELBO": torch.mean(
             torch.stack(policy.get_tower_stats("mean_ELBO"))),
-        "expressiveness_loss": torch.mean(
-            torch.stack(policy.get_tower_stats("expressiveness_loss"))),
             }
 
 
