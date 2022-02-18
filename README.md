@@ -15,7 +15,7 @@ MVAE used as a belief communication model.
 ***rllib_ppo.py*** is used to train the policy model with rllib default network structure. 
 One should enter the experiment name. If he wants to train the policy which takes 
 the belief as observations, then he should set `--use_belief`, otherwise, 
-he could only enter the experiment name. `--test` is set for trained model test purpose, 
+he could only enter the experiment name. `--silent` is used for agents that don't communicate. `--test` is set for trained model test purpose, 
 but man need to also copy the model parameter path into ***rllib_ppo.py***. Besides, man could 
 change the model anf training setting in the file too.
 
