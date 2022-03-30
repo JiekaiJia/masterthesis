@@ -1,34 +1,44 @@
-# Queueing Network
+# Decentralised Coordination in Partially Observable Queueing Networks
 
-Here is an instruction how to use RLlib train with our environment.
+This is my master thesis, using reinforcement learning to control packets dispatch to minimize the 
+packet drop rate. Due to the partial observation of the agents, we implement a communication channel 
+between agents to improve the agents sensing to the environment.
 
 ## Install
 
 `pip install -r requirements.txt`
 
 ## Usage
-***belief_train.py*** is used to train the belief model separately. ***model_components.py*** contains the
-MVAE used as a belief communication model.
+***main.py*** is the core interface for experiments. We can use CLI to control the environment and neural network setting.
+`-experiment_name` is used to name the experiment. `--silent` is a gate controlling communication between agents. 
+`--default` indicates whether to use a 2-layer MLP or customized model for agents. `--JSQ` controls whether we use a heuristic
+policy "join shortest queue" for agents. If we want to test a tarined model, writing down `--test` works. 
+`--true_obs` and `--opposite` control the environment observations. If setting `--true_obs`, the agents get true observation,
+otherwise the agents get opposite observations. If setting neither of them, the agents get delayed observations. Some example
+CLIs is listed here:
 
-`python belief_train.py --use_belief`
+Test JSQ policy with delayed observations(using `--true_obs` or `--opposite` change the observation type).
 
-***rllib_ppo.py*** is used to train the policy model with rllib default network structure. 
-One should enter the experiment name. If he wants to train the policy which takes 
-the belief as observations, then he should set `--use_belief`, otherwise, 
-he could only enter the experiment name. `--silent` is used for agents that don't communicate. `--test` is set for trained model test purpose, 
-but man need to also copy the model parameter path into ***rllib_ppo.py***. Besides, man could 
-change the model anf training setting in the file too.
+`python main.py -experiment_name JSQ --default --test --JSQ`
 
-`python rllib_ppo.py -experiment_name PPO_belief --use_belief`
+Train 2-layer MLP with true observations(the agents have no communication even without setting `--silent`)
 
-***test_train.py*** is used to train the policy model with rllib but customizing 
-loss function and network structure. The use of this file is similar to ***rllib_ppo.py***
+`python main.py -experiment_name PPO_3agents --default --true_obs`
 
-`python test_train.py -experiment_name PPO_1e-6autoencoder1e-4_delhiddens --test`
+Train CommNet with opposite observations(changing experiment name to BiCNetxxx or ATCVxxx to use other communication models).
 
-***RLlib_custom_models.py*** is the file that contains the customised model. The models are all end-to-end models 
-that can directly be trained with rllib. ***custom_PPO.py*** is used to customise the loss function. Because we change 
-the network structure, it's important to use a proper loss function instead of the default one to help train the model 
-efficiently.
+`python main.py -experiment_name CommNet_3agents_opposite --opposite`
+
+***custom_models.py*** is the file that contains ATVC, CommNet, BiCNet. The models are all end-to-end trainable models. 
+
+***custom_loss.py***, here, we implement the ATVC loss, which is an extension of PPO loss. Because we 
+use VAE in ATVC, a VAE loss (ELBO) is then added to the original loss function.
+
+***environment.py*** contains the environment we use in experiments. It's a queueing network with M
+schedulers and S servers. the schedulers (agents) are controlled by neural network and observe the state
+of servers, further they diapatch packets based on their own observations.
+
+***PartialAccess.json*** controls the queueing network. We can define, for example, the number of agents, packet arrival
+rate etc.
 
 
