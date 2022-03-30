@@ -1,47 +1,43 @@
 import numpy as np
+import torch
+from ray.rllib.policy.policy import Policy
 
 
-class BasicPolicy:
-    def __init__(self, conf, env):
-        self.conf = conf
-        self.action_spaces = env.action_spaces
-        self.act_dim = env.action_spaces[env.schedulers[0]].shape[0]
+class JSQHeuristic(Policy):
+    """Choose the shortest queue."""
 
-    def compute_actions(self, obs):
-        raise NotImplementedError()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.exploration = self._create_exploration()
 
-
-class RandomPolicy(BasicPolicy):
-    def __init__(self, conf, env):
-        super().__init__(conf, env)
-
-    def compute_gactions(self, obs):
-        # Dispatch packages to the queues with gaussian distributions.
-        act = np.random.randn(self.act_dim)
-        return act
-
-    def compute_actions(self, obs):
-        # Dispatch packages to a random queue.
-        idx = np.random.choice(range(self.act_dim))
-        act = [-float('inf')] * self.act_dim
-        act[idx] = 0
-        return act
-
-
-class JSQPolicy(BasicPolicy):
-    def __init__(self, conf, env):
-        super().__init__(conf, env)
-
-    def compute_actions(self, obs):
+    def compute_actions(self,
+                        obs_batch,
+                        state_batches=None,
+                        prev_action_batch=None,
+                        prev_reward_batch=None,
+                        info_batch=None,
+                        episodes=None,
+                        **kwargs):
         # Dispatch packages to the queue with shortest queue length.
-        act = [-float("inf")] * self.act_dim
-        obs = np.asarray(obs)
-        if obs[0] > obs[1]:
-            act[1] = 0
-        elif obs[0] < obs[1]:
-            act[0] = 0
-        else:
-            idx = np.random.choice(range(self.act_dim))
-            act[idx] = 0
+        def select(obs):
+            act = np.asarray([-float("inf")] * len(obs))
+            obs = np.asarray(obs)
+            if obs[0] > obs[1]:
+                act[1] = 0
+            elif obs[0] < obs[1]:
+                act[0] = 0
+            else:
+                idx = np.random.choice(range(len(obs)))
+                act[idx] = 0
+            return torch.from_numpy(act).view(1, len(obs))
 
-        return act
+        return torch.cat([select(x) for x in obs_batch], dim=0), [], {}
+
+    def learn_on_batch(self, samples):
+        pass
+
+    def get_weights(self):
+        pass
+
+    def set_weights(self, weights):
+        pass

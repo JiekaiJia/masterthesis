@@ -23,3 +23,7 @@ def get_logger(logger_name, file_name):
     logger.addHandler(handler1)
     logger.addHandler(handler2)
     return logger
+
+
+import tensorflow as tf
+print(tf.__version__)

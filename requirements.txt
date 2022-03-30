@@ -1,6 +1,7 @@
+torch==1.10.0
 ray[default]
 ray[rllib]==1.8.0
-torch==1.10.0
-tensorflow==2.5.0
 torchsummary==1.5.1
 tqdm==4.62.3
+tensorflow
+

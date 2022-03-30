@@ -24,14 +24,12 @@ class CreatePackage:
 class Package:
     def __init__(self, i, t, sender):
         self.id = i
+        self.target = None
+        self.sender = sender
         # The time a package arrives at scheduler's queue.
         self.arriving_time = t
-        self.sender = sender
-        # The time a package stays in scheduler's queue.
-        self.halt_time = 0
         # The time a package is sent from scheduler's queue.
         self.sending_time = None
-        self.target = None
         # The time a package is served.
         self.serving_time = None
         # The time a package departures the server.
